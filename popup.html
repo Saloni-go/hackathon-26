@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <span class="icon">🧠</span>
+      <h2>Neuro-Inclusive Web</h2>
+    </div>
+    
+    <div class="subtitle">Make any website accessible</div>
+    
+    <div class="settings-group">
+      <div class="setting-item">
+        <label class="toggle-switch">
+          <input type="checkbox" id="dyslexicFont">
+          <span class="slider"></span>
+        </label>
+        <div class="setting-info">
+          <div class="setting-name">Dyslexia-Friendly Font</div>
+          <div class="setting-desc">OpenDyslexic font with increased spacing</div>
+        </div>
+      </div>
+      
+      <div class="setting-item">
+        <label class="toggle-switch">
+          <input type="checkbox" id="softColors">
+          <span class="slider"></span>
+        </label>
+        <div class="setting-info">
+          <div class="setting-name">Soft Colors</div>
+          <div class="setting-desc">Reduce sensory load with calm colors</div>
+        </div>
+      </div>
+      
+      <div class="setting-item">
+        <label class="toggle-switch">
+          <input type="checkbox" id="removeDistractions">
+          <span class="slider"></span>
+        </label>
+        <div class="setting-info">
+          <div class="setting-name">Remove Distractions</div>
+          <div class="setting-desc">Hide ads, sidebars, popups, and recommendations</div>
+        </div>
+      </div>
+      
+      <div class="setting-item">
+        <label class="toggle-switch">
+          <input type="checkbox" id="readingRuler">
+          <span class="slider"></span>
+        </label>
+        <div class="setting-info">
+          <div class="setting-name">Reading Ruler</div>
+          <div class="setting-desc">Highlight one line at a time for focus</div>
+        </div>
+      </div>
+      
+      <div class="setting-item">
+        <label class="toggle-switch">
+          <input type="checkbox" id="removeAnimations">
+          <span class="slider"></span>
+        </label>
+        <div class="setting-info">
+          <div class="setting-name">Stop Animations & GIFs</div>
+          <div class="setting-desc">Prevent motion-triggered distractions</div>
+        </div>
+      </div>
+      
+      <div class="setting-item">
+        <label class="toggle-switch">
+          <input type="checkbox" id="simplifyText">
+          <span class="slider"></span>
+        </label>
+        <div class="setting-info">
+          <div class="setting-name">AI Text Simplification</div>
+          <div class="setting-desc">Rewrite complex sentences (AI required)</div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="button-group">
+      <button id="saveBtn" class="btn-primary">💾 Save Settings</button>
+      <button id="resetBtn" class="btn-secondary">↺ Reset</button>
+    </div>
+    
+    <div class="footer">
+      <span id="statusMsg"></span>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
