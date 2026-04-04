@@ -20,6 +20,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const mainStatus = document.getElementById('mainStatus');
   const recommendationSummary = document.getElementById('recommendationSummary');
   const recommendationList = document.getElementById('recommendationList');
+  const themeModeSelect = document.getElementById('themeMode');
+  const themePaletteSelect = document.getElementById('themePalette');
+  const themePaletteHint = document.getElementById('themePaletteHint');
   
   // Sliders
   const adhdSlider = document.getElementById('adhdSlider');
@@ -70,6 +73,63 @@ document.addEventListener('DOMContentLoaded', () => {
     dyslexia: { label: 'Dyslexia', emoji: '📖', gameFile: 'dyslexia-game.html', color: '#00b894' },
     adhd: { label: 'ADHD', emoji: '⚡', gameFile: 'adhd-game.html', color: '#fdcb6e' }
   };
+
+  const neuroPalettes = {
+    creamSepia: {
+      label: 'Cream / Sepia',
+      mode: 'light',
+      background: '#F5EEDC',
+      text: '#332C2B',
+      purpose: 'Dyslexia-friendly, reduces harsh contrast'
+    },
+    sageGreen: {
+      label: 'Sage Green',
+      mode: 'light',
+      background: '#D1E8E2',
+      text: '#2C3531',
+      purpose: 'Calming, supports focus and anxiety reduction'
+    },
+    softCharcoal: {
+      label: 'Soft Charcoal',
+      mode: 'dark',
+      background: '#1A1A2E',
+      text: '#E0E0E0',
+      purpose: 'Autism-friendly, lowers sensory input'
+    },
+    deepNavy: {
+      label: 'Deep Navy',
+      mode: 'dark',
+      background: '#0F172A',
+      text: '#CBD5E1',
+      purpose: 'High focus in low-light conditions'
+    }
+  };
+
+  function getPaletteByMode(mode) {
+    return Object.entries(neuroPalettes)
+      .filter(([, value]) => value.mode === mode)
+      .map(([key, value]) => ({ key, ...value }));
+  }
+
+  function updatePaletteHint(paletteKey) {
+    if (!themePaletteHint) return;
+    const palette = neuroPalettes[paletteKey];
+    if (!palette) {
+      themePaletteHint.textContent = 'Choose a palette to reduce eye strain and sensory load.';
+      return;
+    }
+    themePaletteHint.textContent = `${palette.purpose} (${palette.background} / ${palette.text})`;
+  }
+
+  function populatePaletteOptions(mode, selectedKey) {
+    if (!themePaletteSelect) return;
+    const choices = getPaletteByMode(mode);
+    const fallback = choices[0]?.key || 'creamSepia';
+    const activeKey = choices.some(item => item.key === selectedKey) ? selectedKey : fallback;
+    themePaletteSelect.innerHTML = choices.map((item) => `<option value="${item.key}">${item.label}</option>`).join('');
+    themePaletteSelect.value = activeKey;
+    updatePaletteHint(activeKey);
+  }
 
   function getCurrentProfile() {
     return {
@@ -174,6 +234,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const adhd = parseInt(profile.adhd);
     const dyslexia = parseInt(profile.dyslexia);
     const autism = parseInt(profile.autism);
+
+    const themeMode = (autism >= 55 || adhd >= 60) ? 'dark' : 'light';
+    let themePalette = 'creamSepia';
+    if (themeMode === 'dark') {
+      themePalette = autism >= 65 ? 'softCharcoal' : 'deepNavy';
+    } else if (dyslexia >= 55) {
+      themePalette = 'creamSepia';
+    } else {
+      themePalette = 'sageGreen';
+    }
     
     return {
       dyslexicFont: dyslexia > 30,
@@ -182,7 +252,9 @@ document.addEventListener('DOMContentLoaded', () => {
       readingRuler: adhd > 60,
       removeAnimations: autism > 50 || adhd > 40,
       simplifyText: adhd > 50 || dyslexia > 60,
-      jargonExplainer: dyslexia > 40 || adhd > 30
+      jargonExplainer: dyslexia > 40 || adhd > 30,
+      themeMode,
+      themePalette
     };
   }
   
@@ -215,7 +287,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function loadSettingsIntoUI() {
     chrome.storage.local.get([
       'dyslexicFont', 'softColors', 'removeDistractions',
-      'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer'
+      'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer',
+      'themeMode', 'themePalette'
     ], (result) => {
       if (dyslexicFontChk) dyslexicFontChk.checked = result.dyslexicFont || false;
       if (softColorsChk) softColorsChk.checked = result.softColors || false;
@@ -224,7 +297,24 @@ document.addEventListener('DOMContentLoaded', () => {
       if (removeAnimationsChk) removeAnimationsChk.checked = result.removeAnimations || false;
       if (simplifyTextChk) simplifyTextChk.checked = result.simplifyText || false;
       if (jargonExplainerChk) jargonExplainerChk.checked = result.jargonExplainer || false;
+      const storedMode = result.themeMode === 'dark' ? 'dark' : 'light';
+      const storedPalette = result.themePalette || (storedMode === 'dark' ? 'softCharcoal' : 'creamSepia');
+      if (themeModeSelect) themeModeSelect.value = storedMode;
+      populatePaletteOptions(storedMode, storedPalette);
       console.log('UI loaded with settings:', result);
+    });
+  }
+
+  if (themeModeSelect) {
+    themeModeSelect.addEventListener('change', () => {
+      const mode = themeModeSelect.value === 'dark' ? 'dark' : 'light';
+      populatePaletteOptions(mode);
+    });
+  }
+
+  if (themePaletteSelect) {
+    themePaletteSelect.addEventListener('change', () => {
+      updatePaletteHint(themePaletteSelect.value);
     });
   }
   
@@ -261,6 +351,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (removeAnimationsChk) removeAnimationsChk.checked = settings.removeAnimations;
         if (simplifyTextChk) simplifyTextChk.checked = settings.simplifyText;
         if (jargonExplainerChk) jargonExplainerChk.checked = settings.jargonExplainer;
+        if (themeModeSelect) themeModeSelect.value = settings.themeMode;
+        populatePaletteOptions(settings.themeMode, settings.themePalette);
         
         // Apply to tab (won't crash even if fails)
         applySettingsToTab(settings);
@@ -281,6 +373,8 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.storage.local.set({ onboardingCompleted: true }, () => {
         if (onboardingPanel) onboardingPanel.classList.add('hidden');
         if (mainPanel) mainPanel.classList.remove('hidden');
+        if (themeModeSelect) themeModeSelect.value = 'light';
+        populatePaletteOptions('light', 'creamSepia');
         loadSettingsIntoUI();
       });
     };
@@ -298,7 +392,9 @@ document.addEventListener('DOMContentLoaded', () => {
         readingRuler: readingRulerChk ? readingRulerChk.checked : false,
         removeAnimations: removeAnimationsChk ? removeAnimationsChk.checked : false,
         simplifyText: simplifyTextChk ? simplifyTextChk.checked : false,
-        jargonExplainer: jargonExplainerChk ? jargonExplainerChk.checked : false
+        jargonExplainer: jargonExplainerChk ? jargonExplainerChk.checked : false,
+        themeMode: themeModeSelect ? (themeModeSelect.value === 'dark' ? 'dark' : 'light') : 'light',
+        themePalette: themePaletteSelect ? themePaletteSelect.value : 'creamSepia'
       };
       
       chrome.storage.local.set(settings, () => {
@@ -315,7 +411,8 @@ document.addEventListener('DOMContentLoaded', () => {
       
       const defaults = {
         dyslexicFont: false, softColors: false, removeDistractions: false,
-        readingRuler: false, removeAnimations: false, simplifyText: false, jargonExplainer: false
+        readingRuler: false, removeAnimations: false, simplifyText: false, jargonExplainer: false,
+        themeMode: 'light', themePalette: 'creamSepia'
       };
       
       if (dyslexicFontChk) dyslexicFontChk.checked = false;
@@ -325,6 +422,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (removeAnimationsChk) removeAnimationsChk.checked = false;
       if (simplifyTextChk) simplifyTextChk.checked = false;
       if (jargonExplainerChk) jargonExplainerChk.checked = false;
+      if (themeModeSelect) themeModeSelect.value = 'light';
+      populatePaletteOptions('light', 'creamSepia');
       
       chrome.storage.local.set(defaults, () => {
         showStatus('✓ Reset to defaults', true);
@@ -356,6 +455,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (onboardingPanel) onboardingPanel.classList.remove('hidden');
       if (mainPanel) mainPanel.classList.add('hidden');
       refreshRecommendations();
+      if (themeModeSelect) themeModeSelect.value = 'light';
+      populatePaletteOptions('light', 'creamSepia');
     }
   });
 });

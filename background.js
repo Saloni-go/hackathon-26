@@ -42,6 +42,8 @@ chrome.runtime.onInstalled.addListener((details) => {
   const defaultSettings = {
     dyslexicFont: false,
     softColors: false,
+    themeMode: 'light',
+    themePalette: 'creamSepia',
     removeDistractions: false,
     readingRuler: false,
     removeAnimations: false,
@@ -101,6 +103,72 @@ try {
 
 const HF_API_TOKEN = self.__ENV?.HF_API_TOKEN || '';
 const HF_API_URL = self.__ENV?.HF_API_URL || 'https://api-inference.huggingface.co/models/facebook/bart-large-cnn';
+const GEMINI_API_KEY = self.__ENV?.GEMINI_API_KEY || '';
+const GEMINI_MODEL = self.__ENV?.GEMINI_MODEL || 'gemini-1.5-flash';
+const GEMINI_API_URL = self.__ENV?.GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
+
+async function simplifyTextWithGemini(text) {
+  const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: `Simplify this text for easier reading while keeping meaning.\n\n${text}` }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 400
+      }
+    })
+  });
+
+  if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
+  const data = await response.json();
+  const candidate = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+  return candidate || text;
+}
+
+async function analyzeDomWithGemini(html) {
+  if (!GEMINI_API_KEY) throw new Error('Missing Gemini API key');
+  const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: 'You are a cognitive accessibility expert. Analyze the provided HTML. Identify the CSS selectors for the most important navigation and the primary reading material. Identify clutter that causes sensory overload. Return ONLY valid JSON.' }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: `Identify the main navigation container, the primary content area, and list any distracting elements like ads or sidebars. Return JSON with keys navSelector, mainContentSelector, distractions (array).\n\nHTML:\n${html}` }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 500
+      }
+    })
+  });
+
+  if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
+  const data = await response.json();
+  const raw = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+  if (!raw) throw new Error('Gemini returned empty response');
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart === -1 || jsonEnd === -1) throw new Error('Gemini did not return JSON');
+  const jsonText = raw.slice(jsonStart, jsonEnd + 1);
+  return JSON.parse(jsonText);
+}
 
 async function simplifyTextWithAI(text, retryCount = 0) {
   const textHash = simpleHash(text);
@@ -110,13 +178,20 @@ async function simplifyTextWithAI(text, retryCount = 0) {
     return aiCache.get(textHash);
   }
   
-  if (!HF_API_TOKEN) {
+  if (!GEMINI_API_KEY && !HF_API_TOKEN) {
     const mockResult = mockSimplify(text);
     cacheResult(textHash, mockResult);
     return mockResult;
   }
   
   try {
+    if (GEMINI_API_KEY) {
+      const simplified = await simplifyTextWithGemini(text);
+      cacheResult(textHash, simplified);
+      trackPageSimplification();
+      return simplified;
+    }
+
     const response = await fetch(HF_API_URL, {
       method: 'POST',
       headers: {
@@ -323,6 +398,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'simplifyText') {
     simplifyTextWithAI(request.text)
       .then(simplified => sendResponse({ success: true, simplifiedText: simplified }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'analyzePageStructure') {
+    analyzeDomWithGemini(request.html)
+      .then(result => sendResponse({ success: true, data: result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }

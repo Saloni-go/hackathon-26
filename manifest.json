@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "description": "AI-powered cognitive accessibility for ADHD, Autism, and Dyslexia",
   "permissions": ["storage", "activeTab", "scripting", "alarms", "camera"],
-  "host_permissions": ["<all_urls>", "https://api-inference.huggingface.co/*"],
+  "host_permissions": ["<all_urls>", "https://api-inference.huggingface.co/*", "https://generativelanguage.googleapis.com/*"],
   "background": {
     "service_worker": "background.js"
   },

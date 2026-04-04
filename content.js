@@ -4,6 +4,8 @@ console.log('Neuro-Inclusive content script loaded v2.0');
 let currentSettings = {
   dyslexicFont: false,
   softColors: false,
+  themeMode: 'light',
+  themePalette: 'creamSepia',
   removeDistractions: false,
   readingRuler: false,
   removeAnimations: false,
@@ -39,10 +41,12 @@ function safeSendMessage(message, callback) {
 // ========== INITIALIZATION ==========
 
 chrome.storage.local.get(
-  ['dyslexicFont', 'softColors', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'cognitiveScoring', 'analyticsEnabled'],
+  ['dyslexicFont', 'softColors', 'themeMode', 'themePalette', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'cognitiveScoring', 'analyticsEnabled'],
   (result) => {
     currentSettings.dyslexicFont = result.dyslexicFont || false;
     currentSettings.softColors = result.softColors || false;
+    currentSettings.themeMode = result.themeMode === 'dark' ? 'dark' : 'light';
+    currentSettings.themePalette = result.themePalette || (currentSettings.themeMode === 'dark' ? 'softCharcoal' : 'creamSepia');
     currentSettings.removeDistractions = result.removeDistractions || false;
     currentSettings.readingRuler = result.readingRuler || false;
     currentSettings.removeAnimations = result.removeAnimations || false;
@@ -145,6 +149,45 @@ function removeDyslexiaFont() {
 // ========== 2. SOFT COLORS ==========
 
 function applySoftColors() {
+  const neuroPalettes = {
+    creamSepia: {
+      mode: 'light',
+      background: '#F5EEDC',
+      text: '#332C2B',
+      surface: '#EFE5CF',
+      border: '#C9B99A',
+      link: '#5B4BC4'
+    },
+    sageGreen: {
+      mode: 'light',
+      background: '#D1E8E2',
+      text: '#2C3531',
+      surface: '#C4DED7',
+      border: '#98B8AF',
+      link: '#3A5A50'
+    },
+    softCharcoal: {
+      mode: 'dark',
+      background: '#1A1A2E',
+      text: '#E0E0E0',
+      surface: '#252542',
+      border: '#3B3B5C',
+      link: '#A9B8FF'
+    },
+    deepNavy: {
+      mode: 'dark',
+      background: '#0F172A',
+      text: '#CBD5E1',
+      surface: '#1E293B',
+      border: '#334155',
+      link: '#93C5FD'
+    }
+  };
+
+  const fallbackPaletteKey = currentSettings.themeMode === 'dark' ? 'softCharcoal' : 'creamSepia';
+  const selected = neuroPalettes[currentSettings.themePalette] || neuroPalettes[fallbackPaletteKey];
+  const palette = selected.mode === currentSettings.themeMode ? selected : neuroPalettes[fallbackPaletteKey];
+
   let style = document.getElementById('neuro-colors-style');
   if (!style) {
     style = document.createElement('style');
@@ -152,11 +195,25 @@ function applySoftColors() {
     document.head.appendChild(style);
   }
   style.textContent = `
-    body, .main-content, article, main { background-color: #fdf6e3 !important; color: #2c3e50 !important; }
-    a { color: #6c5ce7 !important; text-decoration: underline !important; }
-    a:hover { color: #5b4bc4 !important; }
-    button, .button, input, textarea { background-color: #eee8d5 !important; border-color: #93a1a1 !important; color: #2c3e50 !important; }
-    p, li, span:not(.special) { color: #3a4a5a !important; }
+    html, body, .main-content, article, main {
+      background-color: ${palette.background} !important;
+      color: ${palette.text} !important;
+    }
+    a {
+      color: ${palette.link} !important;
+      text-decoration: underline !important;
+    }
+    a:hover {
+      filter: brightness(0.92) !important;
+    }
+    button, .button, input, textarea, select {
+      background-color: ${palette.surface} !important;
+      border-color: ${palette.border} !important;
+      color: ${palette.text} !important;
+    }
+    p, li, span:not(.special), label, h1, h2, h3, h4, h5, h6 {
+      color: ${palette.text} !important;
+    }
     div, section, article { background-color: transparent !important; }
   `;
 }
@@ -700,6 +757,198 @@ if (!document.getElementById('neuro-animation-style')) {
     }
   `;
   document.head.appendChild(animStyle);
+}
+
+// ========== AI HELPER WIDGET ==========
+
+function inferSettingsFromPrompt(prompt) {
+  const text = prompt.toLowerCase();
+
+  if (text.includes('reset') || text.includes('default')) {
+    return {
+      dyslexicFont: false,
+      softColors: false,
+      removeDistractions: false,
+      readingRuler: false,
+      removeAnimations: false,
+      simplifyText: false,
+      jargonExplainer: false
+    };
+  }
+
+  const rules = {
+    dyslexicFont: {
+      on: ['dyslexia', 'dyslexic', 'readable font', 'font'],
+      off: ['disable dyslexia', 'disable dyslexic', 'disable font', 'turn off font']
+    },
+    softColors: {
+      on: ['soft colors', 'reduce glare', 'bright', 'sensory', 'calm colors'],
+      off: ['disable soft colors', 'turn off colors']
+    },
+    removeDistractions: {
+      on: ['distraction', 'ads', 'popups', 'remove distractions', 'focus mode'],
+      off: ['disable distractions', 'turn off distractions']
+    },
+    readingRuler: {
+      on: ['reading ruler', 'line focus', 'focus line'],
+      off: ['disable ruler', 'turn off ruler']
+    },
+    removeAnimations: {
+      on: ['animation', 'motion', 'stop gifs', 'reduce motion'],
+      off: ['allow animations', 'turn on animations']
+    },
+    simplifyText: {
+      on: ['simplify', 'simple', 'easy to read', 'summarize'],
+      off: ['disable simplify', 'turn off simplify']
+    },
+    jargonExplainer: {
+      on: ['jargon', 'definitions', 'explain terms'],
+      off: ['disable jargon', 'turn off jargon']
+    }
+  };
+
+  const updates = {};
+  Object.entries(rules).forEach(([key, rule]) => {
+    if (rule.off.some(term => text.includes(term))) {
+      updates[key] = false;
+      return;
+    }
+    if (rule.on.some(term => text.includes(term))) {
+      updates[key] = true;
+    }
+  });
+
+  return updates;
+}
+
+function applySettingsFromPrompt(prompt) {
+  const updates = inferSettingsFromPrompt(prompt);
+  if (!updates || Object.keys(updates).length === 0) {
+    return { success: false, message: 'Could not infer changes. Try mentioning distractions, colors, ruler, or simplify.' };
+  }
+
+  currentSettings = { ...currentSettings, ...updates };
+  chrome.storage.local.set(updates, () => {
+    applyAllModifications();
+  });
+
+  return { success: true, message: 'Applied changes based on your request.' };
+}
+
+function createAIAssistant() {
+  if (document.getElementById('neuro-ai-widget')) return;
+
+  const style = document.createElement('style');
+  style.textContent = `
+    #neuro-ai-widget { position: fixed; bottom: 24px; right: 24px; z-index: 1000002; font-family: system-ui, sans-serif; }
+    #neuro-ai-button { width: 52px; height: 52px; border-radius: 26px; border: none; background: #6c5ce7; color: #fff; font-size: 20px; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
+    #neuro-ai-panel { position: fixed; bottom: 90px; right: 24px; width: 320px; background: #1a1a2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 16px; color: #eee; box-shadow: 0 10px 30px rgba(0,0,0,0.35); display: none; }
+    #neuro-ai-panel header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    #neuro-ai-panel header h4 { margin: 0; font-size: 14px; color: #fff; }
+    #neuro-ai-close { background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 16px; }
+    #neuro-ai-input { width: 100%; min-height: 80px; border-radius: 10px; border: 1px solid #2d2d44; background: #0f0f1a; color: #eee; padding: 10px; font-size: 13px; resize: vertical; }
+    #neuro-ai-actions { display: flex; gap: 8px; margin-top: 10px; }
+    #neuro-ai-actions button { flex: 1; border: none; border-radius: 10px; padding: 8px; cursor: pointer; font-size: 12px; }
+    #neuro-ai-apply { background: #6c5ce7; color: #fff; }
+    #neuro-ai-speak { background: #2d2d44; color: #eee; }
+    #neuro-ai-clear { background: #2d2d44; color: #eee; }
+    #neuro-ai-status { margin-top: 8px; font-size: 11px; color: #c8c8d8; }
+  `;
+  document.head.appendChild(style);
+
+  const widget = document.createElement('div');
+  widget.id = 'neuro-ai-widget';
+  widget.innerHTML = `
+    <button id="neuro-ai-button">🤖</button>
+    <div id="neuro-ai-panel">
+      <header>
+        <h4>AI Helper</h4>
+        <button id="neuro-ai-close">✕</button>
+      </header>
+      <textarea id="neuro-ai-input" placeholder="Describe your issue (e.g., remove distractions, simplify text, calmer colors)"></textarea>
+      <div id="neuro-ai-actions">
+        <button id="neuro-ai-speak">🎙️ Speak</button>
+        <button id="neuro-ai-clear">Clear</button>
+        <button id="neuro-ai-apply">Apply</button>
+      </div>
+      <div id="neuro-ai-status"></div>
+    </div>
+  `;
+
+  document.body.appendChild(widget);
+
+  const button = document.getElementById('neuro-ai-button');
+  const panel = document.getElementById('neuro-ai-panel');
+  const closeBtn = document.getElementById('neuro-ai-close');
+  const input = document.getElementById('neuro-ai-input');
+  const speakBtn = document.getElementById('neuro-ai-speak');
+  const clearBtn = document.getElementById('neuro-ai-clear');
+  const applyBtn = document.getElementById('neuro-ai-apply');
+  const status = document.getElementById('neuro-ai-status');
+
+  let recognition = null;
+  let isListening = false;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'en-US';
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.onresult = (event) => {
+      let combined = '';
+      for (let i = 0; i < event.results.length; i++) {
+        combined += event.results[i][0].transcript + ' ';
+      }
+      if (input) input.value = combined.trim();
+    };
+    recognition.onend = () => {
+      if (isListening) {
+        try { recognition.start(); } catch (e) { /* ignore */ }
+      }
+    };
+  } else if (status) {
+    status.textContent = 'Speech input not supported in this browser.';
+  }
+
+  button.onclick = () => {
+    panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+  };
+  closeBtn.onclick = () => { panel.style.display = 'none'; };
+  clearBtn.onclick = () => {
+    if (input) input.value = '';
+    if (status) status.textContent = '';
+  };
+
+  speakBtn.onclick = () => {
+    if (!recognition) return;
+    if (!isListening) {
+      isListening = true;
+      speakBtn.textContent = '⏹️ Stop';
+      if (status) status.textContent = 'Listening...';
+      try { recognition.start(); } catch (e) { /* ignore */ }
+    } else {
+      isListening = false;
+      speakBtn.textContent = '🎙️ Speak';
+      if (status) status.textContent = 'Stopped listening.';
+      try { recognition.stop(); } catch (e) { /* ignore */ }
+    }
+  };
+
+  applyBtn.onclick = () => {
+    const prompt = input?.value?.trim();
+    if (!prompt) {
+      if (status) status.textContent = 'Please enter or speak a request.';
+      return;
+    }
+    const result = applySettingsFromPrompt(prompt);
+    if (status) status.textContent = result.message;
+  };
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', createAIAssistant);
+} else {
+  createAIAssistant();
 }
 
 // ========== CLEANUP ==========

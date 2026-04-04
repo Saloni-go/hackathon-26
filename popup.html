@@ -48,9 +48,11 @@
       height: 6px;
       border-radius: 3px;
       background: #2d2d44;
+      appearance: none;
       -webkit-appearance: none;
     }
     input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
       -webkit-appearance: none;
       width: 18px;
       height: 18px;
@@ -192,6 +194,20 @@
     <div class="setting-item">
       <input type="checkbox" id="softColors">
       <label>🎨 Soft Colors (Reduce sensory load)</label>
+    </div>
+
+    <div class="setting-item" style="display:block;">
+      <label for="themeMode" style="display:block; margin-bottom:6px;">🌓 Theme Mode</label>
+      <select id="themeMode" style="width:100%; background:#2d2d44; color:#eee; border:1px solid #3d3d5c; border-radius:8px; padding:8px;">
+        <option value="light">Light (Low-glare)</option>
+        <option value="dark">Dark (Low-stimulus)</option>
+      </select>
+    </div>
+
+    <div class="setting-item" style="display:block;">
+      <label for="themePalette" style="display:block; margin-bottom:6px;">🌈 Neuro-Inclusive Palette</label>
+      <select id="themePalette" style="width:100%; background:#2d2d44; color:#eee; border:1px solid #3d3d5c; border-radius:8px; padding:8px;"></select>
+      <div id="themePaletteHint" style="font-size:11px; color:#aaa; margin-top:6px;">Choose a palette to reduce eye strain and sensory load.</div>
     </div>
     
     <div class="setting-item">
