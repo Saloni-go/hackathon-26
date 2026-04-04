@@ -461,4 +461,271 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+
+// ===== NEW SETTINGS ELEMENTS =====
+const removeEmojisChk = document.getElementById('removeEmojis');
+const collapseSidebarsChk = document.getElementById('collapseSidebars');
+const focusCircleButtons = {
+  off: document.getElementById('focusCircleOff'),
+  blue: document.getElementById('focusCircleBlue'),
+  green: document.getElementById('focusCircleGreen'),
+  yellow: document.getElementById('focusCircleYellow'),
+  red: document.getElementById('focusCircleRed')
+};
+const bgColorButtons = {
+  cream: document.getElementById('bgColorCream'),
+  sage: document.getElementById('bgColorSage'),
+  charcoal: document.getElementById('bgColorCharcoal'),
+  navy: document.getElementById('bgColorNavy'),
+  black: document.getElementById('bgColorBlack')
+};
+const bgPatternButtons = {
+  none: document.getElementById('bgPatternNone'),
+  dots: document.getElementById('bgPatternDots'),
+  lines: document.getElementById('bgPatternLines'),
+  grid: document.getElementById('bgPatternGrid')
+};
+const zoomInBtn = document.getElementById('zoomIn');
+const zoomOutBtn = document.getElementById('zoomOut');
+const zoomResetBtn = document.getElementById('zoomReset');
+const zoomLevelSpan = document.getElementById('zoomLevel');
+
+let currentZoom = 100;
+let currentFocusCircle = 'off';
+let currentBgColor = '#1a1a2e';
+let currentBgPattern = 'none';
+
+// Load zoom level from storage
+chrome.storage.local.get(['zoomLevel'], (result) => {
+  if (result.zoomLevel) {
+    currentZoom = result.zoomLevel;
+    updateZoomDisplay();
+  }
+});
+
+function updateZoomDisplay() {
+  if (zoomLevelSpan) zoomLevelSpan.textContent = `${currentZoom}%`;
+}
+
+// Zoom functions
+if (zoomInBtn) {
+  zoomInBtn.onclick = () => {
+    currentZoom = Math.min(currentZoom + 10, 200);
+    updateZoomDisplay();
+    chrome.storage.local.set({ zoomLevel: currentZoom });
+    applyZoomToTab(currentZoom);
+  };
+}
+
+if (zoomOutBtn) {
+  zoomOutBtn.onclick = () => {
+    currentZoom = Math.max(currentZoom - 10, 50);
+    updateZoomDisplay();
+    chrome.storage.local.set({ zoomLevel: currentZoom });
+    applyZoomToTab(currentZoom);
+  };
+}
+
+if (zoomResetBtn) {
+  zoomResetBtn.onclick = () => {
+    currentZoom = 100;
+    updateZoomDisplay();
+    chrome.storage.local.set({ zoomLevel: currentZoom });
+    applyZoomToTab(currentZoom);
+  };
+}
+
+function applyZoomToTab(zoom) {
+  chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+    if (tabs[0] && tabs[0].id) {
+      chrome.scripting.executeScript({
+        target: { tabId: tabs[0].id },
+        func: (zoomLevel) => {
+          document.body.style.zoom = `${zoomLevel}%`;
+        },
+        args: [zoom]
+      });
+    }
+  });
+}
+
+// Focus Circle selection
+if (focusCircleButtons.off) {
+  focusCircleButtons.off.onclick = () => {
+    currentFocusCircle = 'off';
+    chrome.storage.local.set({ focusCircleColor: 'off' });
+    applyFocusCircleToTab('off');
+    showStatus('Focus circle disabled', true);
+  };
+}
+if (focusCircleButtons.blue) {
+  focusCircleButtons.blue.onclick = () => {
+    currentFocusCircle = '#6c5ce7';
+    chrome.storage.local.set({ focusCircleColor: '#6c5ce7' });
+    applyFocusCircleToTab('#6c5ce7');
+    showStatus('Blue focus circle enabled', true);
+  };
+}
+if (focusCircleButtons.green) {
+  focusCircleButtons.green.onclick = () => {
+    currentFocusCircle = '#00b894';
+    chrome.storage.local.set({ focusCircleColor: '#00b894' });
+    applyFocusCircleToTab('#00b894');
+    showStatus('Green focus circle enabled', true);
+  };
+}
+if (focusCircleButtons.yellow) {
+  focusCircleButtons.yellow.onclick = () => {
+    currentFocusCircle = '#fdcb6e';
+    chrome.storage.local.set({ focusCircleColor: '#fdcb6e' });
+    applyFocusCircleToTab('#fdcb6e');
+    showStatus('Yellow focus circle enabled', true);
+  };
+}
+if (focusCircleButtons.red) {
+  focusCircleButtons.red.onclick = () => {
+    currentFocusCircle = '#e74c3c';
+    chrome.storage.local.set({ focusCircleColor: '#e74c3c' });
+    applyFocusCircleToTab('#e74c3c');
+    showStatus('Red focus circle enabled', true);
+  };
+}
+
+function applyFocusCircleToTab(color) {
+  chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+    if (tabs[0] && tabs[0].id) {
+      chrome.tabs.sendMessage(tabs[0].id, {
+        action: 'updateFocusCircle',
+        color: color
+      });
+    }
+  });
+}
+
+// Background Color selection
+if (bgColorButtons.cream) {
+  bgColorButtons.cream.onclick = () => {
+    currentBgColor = '#F5EEDC';
+    chrome.storage.local.set({ customBgColor: '#F5EEDC' });
+    applyBgColorToTab('#F5EEDC');
+    showStatus('Background changed to Cream', true);
+  };
+}
+if (bgColorButtons.sage) {
+  bgColorButtons.sage.onclick = () => {
+    currentBgColor = '#D1E8E2';
+    chrome.storage.local.set({ customBgColor: '#D1E8E2' });
+    applyBgColorToTab('#D1E8E2');
+    showStatus('Background changed to Sage Green', true);
+  };
+}
+if (bgColorButtons.charcoal) {
+  bgColorButtons.charcoal.onclick = () => {
+    currentBgColor = '#1A1A2E';
+    chrome.storage.local.set({ customBgColor: '#1A1A2E' });
+    applyBgColorToTab('#1A1A2E');
+    showStatus('Background changed to Charcoal', true);
+  };
+}
+if (bgColorButtons.navy) {
+  bgColorButtons.navy.onclick = () => {
+    currentBgColor = '#0F172A';
+    chrome.storage.local.set({ customBgColor: '#0F172A' });
+    applyBgColorToTab('#0F172A');
+    showStatus('Background changed to Deep Navy', true);
+  };
+}
+if (bgColorButtons.black) {
+  bgColorButtons.black.onclick = () => {
+    currentBgColor = '#000000';
+    chrome.storage.local.set({ customBgColor: '#000000' });
+    applyBgColorToTab('#000000');
+    showStatus('Background changed to Black', true);
+  };
+}
+
+function applyBgColorToTab(color) {
+  chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+    if (tabs[0] && tabs[0].id) {
+      chrome.tabs.sendMessage(tabs[0].id, {
+        action: 'updateBackgroundColor',
+        color: color
+      });
+    }
+  });
+}
+
+// Background Pattern selection
+if (bgPatternButtons.none) {
+  bgPatternButtons.none.onclick = () => {
+    currentBgPattern = 'none';
+    chrome.storage.local.set({ bgPattern: 'none' });
+    applyBgPatternToTab('none');
+    showStatus('Background pattern removed', true);
+  };
+}
+if (bgPatternButtons.dots) {
+  bgPatternButtons.dots.onclick = () => {
+    currentBgPattern = 'dots';
+    chrome.storage.local.set({ bgPattern: 'dots' });
+    applyBgPatternToTab('dots');
+    showStatus('Dot pattern applied', true);
+  };
+}
+if (bgPatternButtons.lines) {
+  bgPatternButtons.lines.onclick = () => {
+    currentBgPattern = 'lines';
+    chrome.storage.local.set({ bgPattern: 'lines' });
+    applyBgPatternToTab('lines');
+    showStatus('Line pattern applied', true);
+  };
+}
+if (bgPatternButtons.grid) {
+  bgPatternButtons.grid.onclick = () => {
+    currentBgPattern = 'grid';
+    chrome.storage.local.set({ bgPattern: 'grid' });
+    applyBgPatternToTab('grid');
+    showStatus('Grid pattern applied', true);
+  };
+}
+
+function applyBgPatternToTab(pattern) {
+  chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+    if (tabs[0] && tabs[0].id) {
+      chrome.tabs.sendMessage(tabs[0].id, {
+        action: 'updateBackgroundPattern',
+        pattern: pattern
+      });
+    }
+  });
+}
+
+// Update the save button to include new settings
+const originalSaveHandler = saveBtn?.onclick;
+if (saveBtn) {
+  saveBtn.onclick = () => {
+    const settings = {
+      dyslexicFont: dyslexicFontChk ? dyslexicFontChk.checked : false,
+      softColors: softColorsChk ? softColorsChk.checked : false,
+      removeDistractions: removeDistractionsChk ? removeDistractionsChk.checked : false,
+      readingRuler: readingRulerChk ? readingRulerChk.checked : false,
+      removeAnimations: removeAnimationsChk ? removeAnimationsChk.checked : false,
+      simplifyText: simplifyTextChk ? simplifyTextChk.checked : false,
+      jargonExplainer: jargonExplainerChk ? jargonExplainerChk.checked : false,
+      removeEmojis: removeEmojisChk ? removeEmojisChk.checked : false,
+      collapseSidebars: collapseSidebarsChk ? collapseSidebarsChk.checked : false,
+      focusCircleColor: currentFocusCircle,
+      customBgColor: currentBgColor,
+      bgPattern: currentBgPattern,
+      zoomLevel: currentZoom
+    };
+    
+    chrome.storage.local.set(settings, () => {
+      showStatus('✓ All settings saved!', true);
+      applySettingsToTab(settings);
+    });
+  };
+}
+
 console.log('popup.js finished loading');
+

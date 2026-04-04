@@ -1,244 +1,289 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    body {
-      width: 380px;
-      min-height: 500px;
-      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-      background: #1a1a2e;
-      color: #eee;
-      padding: 20px;
-    }
-    button {
-      background: #6c5ce7;
-      color: white;
-      border: none;
-      padding: 12px 16px;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      cursor: pointer;
-      width: 100%;
-      margin-top: 10px;
-      transition: all 0.2s;
-    }
-    button:hover {
-      background: #5b4bc4;
-      transform: translateY(-1px);
-    }
-    button:active {
-      transform: translateY(0);
-    }
-    .btn-secondary {
-      background: #2d2d44;
-    }
-    .btn-secondary:hover {
-      background: #3d3d5c;
-    }
-    input[type="range"] {
-      width: 100%;
-      margin: 10px 0;
-      height: 6px;
-      border-radius: 3px;
-      background: #2d2d44;
-      appearance: none;
-      -webkit-appearance: none;
-    }
-    input[type="range"]::-webkit-slider-thumb {
-      appearance: none;
-      -webkit-appearance: none;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: #6c5ce7;
-      cursor: pointer;
-    }
-    input[type="checkbox"] {
-      margin-right: 10px;
-      transform: scale(1.2);
-    }
-    .slider-group {
-      background: #0f0f1a;
-      padding: 15px;
-      border-radius: 12px;
-      margin-bottom: 15px;
-    }
-    .slider-header {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 8px;
-    }
-    .slider-value {
-      color: #6c5ce7;
-      font-weight: bold;
-    }
-    .hidden {
-      display: none;
-    }
-    .header {
-      text-align: center;
-      margin-bottom: 20px;
-    }
-    .icon {
-      font-size: 40px;
-    }
-    h2 {
-      font-size: 18px;
-      margin-top: 5px;
-    }
-    .subtitle {
-      font-size: 12px;
-      color: #888;
-      text-align: center;
-      margin-bottom: 20px;
-    }
-    .setting-item {
-      background: #0f0f1a;
-      padding: 12px;
-      border-radius: 10px;
-      margin-bottom: 10px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .status {
-      text-align: center;
-      font-size: 12px;
-      color: #6c5ce7;
-      margin-top: 15px;
-      padding-top: 10px;
-      border-top: 1px solid #2d2d44;
-    }
-  </style>
+  <meta charset="UTF-8" />
+  <title>Neuro-Inclusive Web</title>
+  <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-   <!-- ONBOARDING PANEL -->
-  <div id="onboardingPanel">
-    <div class="header">
-      <div class="icon">🧠</div>
-      <h2>Welcome to Neuro-Inclusive Web</h2>
-    </div>
-    <div class="subtitle">Let's personalize your browsing experience</div>
-    
-    <!-- Quick Assessment Section -->
-    <div style="background: rgba(108,92,231,0.1); border-radius: 16px; padding: 15px; margin-bottom: 20px;">
-      <div style="text-align: center; margin-bottom: 12px; font-size: 14px; font-weight: 600;">🎮 Take an Interactive Assessment</div>
-      <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-        <button id="playAutismGameBtn" style="flex: 1; background: #6c5ce7; margin: 0;">🎨 Autism</button>
-        <button id="playDyslexiaGameBtn" style="flex: 1; background: #00b894; margin: 0;">📖 Dyslexia</button>
-        <button id="playADHDGameBtn" style="flex: 1; background: #fdcb6e; margin: 0; color: #1a1a2e;">⚡ ADHD</button>
+  <!-- ONBOARDING PANEL -->
+  <div id="onboardingPanel" class="panel-shell">
+    <div class="hero-card">
+      <div class="hero-icon">🧠</div>
+      <div class="hero-text">
+        <h1>Neuro-Inclusive Web</h1>
+        <p>Personalize browsing for focus, clarity, and reduced cognitive overload.</p>
       </div>
-      <div style="font-size: 10px; color: #888; text-align: center; margin-top: 10px;">✨ Fun games that analyze your responses</div>
     </div>
 
-    <div style="background: rgba(0, 184, 148, 0.08); border-radius: 16px; padding: 15px; margin-bottom: 20px;">
-      <div style="text-align: center; margin-bottom: 8px; font-size: 14px; font-weight: 600;">📋 Recommended Questionnaires</div>
-      <div id="recommendationSummary" style="font-size: 12px; color: #c8c8d8; text-align: center; margin-bottom: 10px;">Adjust the sliders to rank your questionnaires.</div>
-      <div id="recommendationList" style="display: grid; gap: 8px;"></div>
-      <button id="openRecommendedBtn" class="btn-secondary" style="margin-top: 12px;">Open Recommended Questionnaire</button>
+    <div class="top-nav">
+      <a href="#assessmentSection" class="nav-chip">Assessment</a>
+      <a href="#questionnaireSection" class="nav-chip">Questionnaires</a>
+      <a href="#manualSection" class="nav-chip">Manual sliders</a>
     </div>
-    
-    <div style="text-align: center; margin: 10px 0; color: #888; font-size: 12px;">— OR adjust manually —</div>
-    
-    <div class="slider-group">
-      <div class="slider-header">
-        <span>⚡ ADHD</span>
-        <span class="slider-value" id="adhdValue">50</span>
+
+    <div id="assessmentSection" class="section-card accent-purple">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Quick start</div>
+          <h2>Interactive assessment</h2>
+        </div>
+        <span class="section-badge">Fun games</span>
       </div>
-      <input type="range" id="adhdSlider" min="0" max="100" value="50">
-      <div style="font-size: 11px; color: #888;">Easily distracted, difficulty focusing</div>
-    </div>
-    
-    <div class="slider-group">
-      <div class="slider-header">
-        <span>📖 Dyslexia</span>
-        <span class="slider-value" id="dyslexiaValue">50</span>
+
+      <p class="section-copy">
+        Run a quick game-based screening to estimate which accessibility settings may help most.
+      </p>
+
+      <div class="game-grid">
+        <button id="playAutismGameBtn" class="game-btn purple">🎨 Autism</button>
+        <button id="playDyslexiaGameBtn" class="game-btn green">📖 Dyslexia</button>
+        <button id="playADHDGameBtn" class="game-btn yellow">⚡ ADHD</button>
       </div>
-      <input type="range" id="dyslexiaSlider" min="0" max="100" value="50">
-      <div style="font-size: 11px; color: #888;">Difficulty reading, letter confusion</div>
+
+      <div class="micro-copy">These games open in a separate tab and save your recommended preferences.</div>
     </div>
-    
-    <div class="slider-group">
-      <div class="slider-header">
-        <span>🎨 Autism / Sensory</span>
-        <span class="slider-value" id="autismValue">50</span>
+
+    <div id="questionnaireSection" class="section-card accent-green">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Recommended next step</div>
+          <h2>Questionnaires</h2>
+        </div>
+        <span class="section-badge">Smart ranking</span>
       </div>
-      <input type="range" id="autismSlider" min="0" max="100" value="50">
-      <div style="font-size: 11px; color: #888;">Sensory overload, need for predictability</div>
+
+      <p id="recommendationSummary" class="section-copy">
+        Adjust the sliders to rank your questionnaires.
+      </p>
+
+      <div id="recommendationList" class="recommendation-list"></div>
+
+      <button id="openRecommendedBtn" class="btn-secondary wide-btn">Open Recommended Questionnaire</button>
     </div>
-    
-    <button id="startBtn">✨ Start Browsing</button>
-    <button id="skipBtn" class="btn-secondary">Skip to Manual Settings</button>
-    <div id="onboardStatus" class="status"></div>
+
+    <div id="manualSection" class="section-card">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Manual control</div>
+          <h2>Adjust your needs</h2>
+        </div>
+      </div>
+
+      <div class="slider-group">
+        <div class="slider-header">
+          <div class="slider-label-block">
+            <span class="slider-emoji">⚡</span>
+            <div>
+              <div class="slider-name">ADHD</div>
+              <div class="slider-desc">Easily distracted, difficulty focusing</div>
+            </div>
+          </div>
+          <span class="slider-value" id="adhdValue">50</span>
+        </div>
+        <input class="neuro-slider" type="range" id="adhdSlider" min="0" max="100" value="50" />
+      </div>
+
+      <div class="slider-group">
+        <div class="slider-header">
+          <div class="slider-label-block">
+            <span class="slider-emoji">📖</span>
+            <div>
+              <div class="slider-name">Dyslexia</div>
+              <div class="slider-desc">Difficulty reading, letter confusion</div>
+            </div>
+          </div>
+          <span class="slider-value" id="dyslexiaValue">50</span>
+        </div>
+        <input class="neuro-slider" type="range" id="dyslexiaSlider" min="0" max="100" value="50" />
+      </div>
+
+      <div class="slider-group">
+        <div class="slider-header">
+          <div class="slider-label-block">
+            <span class="slider-emoji">🎨</span>
+            <div>
+              <div class="slider-name">Autism / Sensory</div>
+              <div class="slider-desc">Sensory overload, need for predictability</div>
+            </div>
+          </div>
+          <span class="slider-value" id="autismValue">50</span>
+        </div>
+        <input class="neuro-slider" type="range" id="autismSlider" min="0" max="100" value="50" />
+      </div>
+
+      <div class="button-stack">
+        <button id="startBtn" class="btn-primary wide-btn">✨ Start Browsing</button>
+        <button id="skipBtn" class="btn-secondary wide-btn">Skip to Manual Settings</button>
+      </div>
+
+      <div id="onboardStatus" class="status"></div>
+    </div>
   </div>
 
   <!-- MAIN SETTINGS PANEL -->
-  <div id="mainPanel" class="hidden">
-    <div class="header">
-      <div class="icon">⚙️</div>
-      <h2>Accessibility Settings</h2>
-    </div>
-    
-    <div class="setting-item">
-      <input type="checkbox" id="dyslexicFont">
-      <label>📖 Dyslexia-Friendly Font</label>
-    </div>
-    
-    <div class="setting-item">
-      <input type="checkbox" id="softColors">
-      <label>🎨 Soft Colors (Reduce sensory load)</label>
+  <div id="mainPanel" class="panel-shell hidden">
+    <div class="hero-card compact">
+      <div class="hero-icon">⚙️</div>
+      <div class="hero-text">
+        <h1>Accessibility Settings</h1>
+        <p>Tune text, visuals, and focus tools for the current browsing experience.</p>
+      </div>
     </div>
 
-    <div class="setting-item" style="display:block;">
-      <label for="themeMode" style="display:block; margin-bottom:6px;">🌓 Theme Mode</label>
-      <select id="themeMode" style="width:100%; background:#2d2d44; color:#eee; border:1px solid #3d3d5c; border-radius:8px; padding:8px;">
-        <option value="light">Light (Low-glare)</option>
-        <option value="dark">Dark (Low-stimulus)</option>
-      </select>
+    <div class="top-nav">
+      <a href="#importantToolsSection" class="nav-chip">Important</a>
+      <a href="#readingSection" class="nav-chip">Reading</a>
+      <a href="#visualSection" class="nav-chip">Visual</a>
+      <a href="#focusSection" class="nav-chip">Focus</a>
+      <a href="#actionsSection" class="nav-chip">Actions</a>
     </div>
 
-    <div class="setting-item" style="display:block;">
-      <label for="themePalette" style="display:block; margin-bottom:6px;">🌈 Neuro-Inclusive Palette</label>
-      <select id="themePalette" style="width:100%; background:#2d2d44; color:#eee; border:1px solid #3d3d5c; border-radius:8px; padding:8px;"></select>
-      <div id="themePaletteHint" style="font-size:11px; color:#aaa; margin-top:6px;">Choose a palette to reduce eye strain and sensory load.</div>
+    <div id="importantToolsSection" class="section-card feature-highlight">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Best features</div>
+          <h2>Important tools</h2>
+        </div>
+        <span class="section-badge">AI-powered</span>
+      </div>
+
+      <div class="important-grid">
+        <label class="setting-tile featured">
+          <div class="tile-main">
+            <input type="checkbox" id="simplifyText" />
+            <div>
+              <div class="tile-title">🤖 AI Text Simplification</div>
+              <div class="tile-desc">Rewrites dense text into easier language.</div>
+            </div>
+          </div>
+        </label>
+
+        <label class="setting-tile featured">
+          <div class="tile-main">
+            <input type="checkbox" id="jargonExplainer" />
+            <div>
+              <div class="tile-title">📚 Jargon Explainer</div>
+              <div class="tile-desc">Hover complex words to get quick definitions.</div>
+            </div>
+          </div>
+        </label>
+      </div>
     </div>
-    
-    <div class="setting-item">
-      <input type="checkbox" id="removeDistractions">
-      <label>🚫 Remove Distractions (Ads, popups)</label>
+
+    <div id="readingSection" class="section-card">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Reading support</div>
+          <h2>Text & reading</h2>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <label class="setting-tile">
+          <div class="tile-main">
+            <input type="checkbox" id="dyslexicFont" />
+            <div>
+              <div class="tile-title">📖 Dyslexia-Friendly Font</div>
+              <div class="tile-desc">Improves readability with accessible font spacing.</div>
+            </div>
+          </div>
+        </label>
+
+        <label class="setting-tile">
+          <div class="tile-main">
+            <input type="checkbox" id="readingRuler" />
+            <div>
+              <div class="tile-title">📏 Reading Ruler</div>
+              <div class="tile-desc">Helps track one line at a time.</div>
+            </div>
+          </div>
+        </label>
+      </div>
     </div>
-    
-    <div class="setting-item">
-      <input type="checkbox" id="readingRuler">
-      <label>📏 Reading Ruler (Focus line by line)</label>
+
+    <div id="visualSection" class="section-card">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Appearance</div>
+          <h2>Visual & theme</h2>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <label class="setting-tile">
+          <div class="tile-main">
+            <input type="checkbox" id="softColors" />
+            <div>
+              <div class="tile-title">🎨 Soft Colors</div>
+              <div class="tile-desc">Reduces harsh contrast and visual strain.</div>
+            </div>
+          </div>
+        </label>
+
+        <div class="setting-tile vertical">
+          <label for="themeMode" class="field-label">🌓 Theme Mode</label>
+          <select id="themeMode">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+
+        <div class="setting-tile vertical">
+          <label for="themePalette" class="field-label">🎨 Color Palette</label>
+          <select id="themePalette"></select>
+          <div id="themePaletteHint" class="helper-text"></div>
+        </div>
+      </div>
     </div>
-    
-    <div class="setting-item">
-      <input type="checkbox" id="removeAnimations">
-      <label>⏸️ Stop Animations & GIFs</label>
+
+    <div id="focusSection" class="section-card">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Reduce overload</div>
+          <h2>Focus & distraction control</h2>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <label class="setting-tile">
+          <div class="tile-main">
+            <input type="checkbox" id="removeDistractions" />
+            <div>
+              <div class="tile-title">🧹 Remove Distractions</div>
+              <div class="tile-desc">Hides popups, side content, and noisy sections.</div>
+            </div>
+          </div>
+        </label>
+
+        <label class="setting-tile">
+          <div class="tile-main">
+            <input type="checkbox" id="removeAnimations" />
+            <div>
+              <div class="tile-title">🎞️ Remove Animations</div>
+              <div class="tile-desc">Reduces motion and autoplay distractions.</div>
+            </div>
+          </div>
+        </label>
+      </div>
     </div>
-    
-    <div class="setting-item">
-      <input type="checkbox" id="simplifyText">
-      <label>🤖 AI Text Simplification</label>
+
+    <div id="actionsSection" class="section-card">
+      <div class="section-title-row">
+        <div>
+          <div class="section-kicker">Apply changes</div>
+          <h2>Actions</h2>
+        </div>
+      </div>
+
+      <div class="button-stack">
+        <button id="saveBtn" class="btn-primary wide-btn">💾 Save All Settings</button>
+        <button id="resetBtn" class="btn-secondary wide-btn">↺ Reset to Defaults</button>
+        <button id="backBtn" class="btn-secondary wide-btn">← Back to Assessment</button>
+      </div>
+
+      <div id="mainStatus" class="status"></div>
     </div>
-    
-    <div class="setting-item">
-      <input type="checkbox" id="jargonExplainer">
-      <label>📚 Jargon Explainer (Hover for definitions)</label>
-    </div>
-    
-    <button id="saveBtn">💾 Save Settings</button>
-    <button id="resetBtn" class="btn-secondary">↺ Reset to Defaults</button>
-    <button id="backBtn" class="btn-secondary">← Back to Assessment</button>
-    <div id="mainStatus" class="status"></div>
   </div>
 
   <script src="popup.js"></script>

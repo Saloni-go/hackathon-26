@@ -11,6 +11,7 @@ let currentSettings = {
   removeAnimations: false,
   simplifyText: false,
   jargonExplainer: false,
+  toneDecoder: false,
   cognitiveScoring: true,
   analyticsEnabled: true
 };
@@ -19,6 +20,18 @@ let readingRulerElement = null;
 let observer = null;
 let animationObserver = null;
 let cognitiveScoreDisplay = null;
+let learnedOverrides = {};
+
+const TRACKED_FEATURES = [
+  'dyslexicFont',
+  'softColors',
+  'removeDistractions',
+  'readingRuler',
+  'removeAnimations',
+  'simplifyText',
+  'jargonExplainer',
+  'toneDecoder'
+];
 
 // ========== SAFE MESSAGING UTILITY ==========
 
@@ -41,7 +54,7 @@ function safeSendMessage(message, callback) {
 // ========== INITIALIZATION ==========
 
 chrome.storage.local.get(
-  ['dyslexicFont', 'softColors', 'themeMode', 'themePalette', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'cognitiveScoring', 'analyticsEnabled'],
+  ['dyslexicFont', 'softColors', 'themeMode', 'themePalette', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled'],
   (result) => {
     currentSettings.dyslexicFont = result.dyslexicFont || false;
     currentSettings.softColors = result.softColors || false;
@@ -52,11 +65,14 @@ chrome.storage.local.get(
     currentSettings.removeAnimations = result.removeAnimations || false;
     currentSettings.simplifyText = result.simplifyText || false;
     currentSettings.jargonExplainer = result.jargonExplainer || false;
+    currentSettings.toneDecoder = result.toneDecoder || false;
     currentSettings.cognitiveScoring = result.cognitiveScoring !== false;
     currentSettings.analyticsEnabled = result.analyticsEnabled !== false;
-    
+
     applyAllModifications();
-    
+
+    refreshLearnedPreferences();
+
     if (currentSettings.cognitiveScoring) {
       setTimeout(() => calculateAndDisplayCognitiveScore(), 1500);
     }
@@ -68,22 +84,27 @@ try {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     try {
       if (request.action === 'settingsUpdated') {
+        const previousSettings = { ...currentSettings };
         currentSettings = { ...currentSettings, ...request.settings };
+        recordFeatureOverrides(previousSettings, currentSettings);
         applyAllModifications();
         sendResponse({ success: true });
       }
+
       
+
       if (request.action === 'simplifyPageWithAI') {
         simplifyPageWithAI();
         sendResponse({ success: true });
       }
-      
+
       if (request.action === 'enableCorrectionMode') {
         enableCorrectionMode();
         sendResponse({ success: true });
       }
-      
+
       return true;
+      
     } catch (e) {
       console.warn('Message handler error:', e);
       sendResponse({ success: false, error: e.message });
@@ -97,26 +118,1077 @@ try {
 // ========== MAIN APPLY FUNCTION ==========
 
 function applyAllModifications() {
-  if (currentSettings.dyslexicFont) applyDyslexiaFont();
-  else removeDyslexiaFont();
-  
-  if (currentSettings.softColors) applySoftColors();
-  else removeSoftColors();
-  
-  if (currentSettings.removeDistractions) {
-    removeDistractions();
-    startDistractionObserver();
-  } else stopDistractionObserver();
-  
-  if (currentSettings.readingRuler) createReadingRuler();
-  else removeReadingRuler();
-  
-  if (currentSettings.removeAnimations) {
-    removeAnimations();
-    startAnimationObserver();
-  } else stopAnimationObserver();
-  
-  if (currentSettings.jargonExplainer) initJargonExplainer();
+  runMasterOrchestrator().catch((error) => {
+    console.warn('Master Orchestrator failed, falling back to safe defaults:', error);
+    try { removeDyslexiaFont(); } catch (e) {}
+    try { removeSoftColors(); } catch (e) {}
+    try { stopDistractionObserver(); } catch (e) {}
+    try { removeReadingRuler(); } catch (e) {}
+    try { stopAnimationObserver(); } catch (e) {}
+    try { removeStructuredLayout(); } catch (e) {}
+  });
+}
+
+function getEnabledSettingsFromStorage() {
+  return new Promise((resolve) => {
+    const keys = [
+      'dyslexicFont', 'softColors', 'themeMode', 'themePalette',
+      'removeDistractions', 'readingRuler', 'removeAnimations',
+      'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled',
+      'userIntent'
+    ];
+    chrome.storage.local.get(keys, (result) => {
+      const settings = {
+        dyslexicFont: result.dyslexicFont || false,
+        softColors: result.softColors || false,
+        themeMode: result.themeMode === 'dark' ? 'dark' : 'light',
+        themePalette: result.themePalette || 'creamSepia',
+        removeDistractions: result.removeDistractions || false,
+        readingRuler: result.readingRuler || false,
+        removeAnimations: result.removeAnimations || false,
+        simplifyText: result.simplifyText || false,
+        jargonExplainer: result.jargonExplainer || false,
+        toneDecoder: result.toneDecoder || false,
+        cognitiveScoring: result.cognitiveScoring !== false,
+        analyticsEnabled: result.analyticsEnabled !== false,
+        userIntent: result.userIntent || ''
+      };
+
+      resolve(mergeLearnedOverrides(settings));
+    });
+  });
+}
+
+// ===== Feedback Loop Agent (learned preferences) =====
+
+function mergeLearnedOverrides(settings) {
+  if (!learnedOverrides || typeof learnedOverrides !== 'object') return settings;
+  const merged = { ...settings };
+  for (const [feature, overrideValue] of Object.entries(learnedOverrides)) {
+    if (typeof settings[feature] === 'boolean') {
+      merged[feature] = overrideValue;
+    }
+  }
+  return merged;
+}
+
+function getPageCategory() {
+  try {
+    return detectSiteContext().pageType || 'generic';
+  } catch (e) {
+    return 'generic';
+  }
+}
+
+function refreshLearnedPreferences() {
+  const hostname = window.location.hostname;
+  if (!hostname) return;
+  const pageCategory = getPageCategory();
+  safeSendMessage(
+    { action: 'getLearnedPreferences', hostname, pageCategory, currentSettings },
+    (response) => {
+      if (!response?.success || !response.overrides) return;
+      learnedOverrides = response.overrides || {};
+      applyAllModifications();
+    }
+  );
+}
+
+function recordFeatureOverrides(previousSettings, nextSettings) {
+  const hostname = window.location.hostname;
+  if (!hostname) return;
+  const pageCategory = getPageCategory();
+
+  TRACKED_FEATURES.forEach((feature) => {
+    const before = previousSettings[feature];
+    const after = nextSettings[feature];
+    if (typeof before === 'boolean' && typeof after === 'boolean' && before !== after) {
+      safeSendMessage({
+        action: 'recordFeatureOverride',
+        hostname,
+        pageCategory,
+        feature,
+        enabled: after
+      });
+    }
+  });
+}
+
+function detectCurrentSiteType() {
+  return detectSiteContext().pageType;
+}
+
+// ========== CONTEXT MONITOR ===========
+
+function detectSiteContext() {
+  const signals = [];
+  const hostname = window.location.hostname || '';
+  const host = hostname.toLowerCase();
+  const path = (window.location.pathname || '').toLowerCase();
+
+  // Heuristic: common news/blog/document pages include articles and long-form content.
+  const articleElement = document.querySelector('article, [role="article"], .post, .entry-content');
+  if (articleElement) signals.push('article-element');
+
+  // Heuristic: documentation sites often use markdown renderers and doc-specific containers.
+  if (document.querySelector('main .markdown-body, .documentation, [class*="doc"], [id*="doc"]')) {
+    signals.push('documentation-container');
+  }
+
+  // Heuristic: long paragraphs typically indicate reading-oriented pages.
+  const longParagraph = Array.from(document.querySelectorAll('p')).some(p => (p.innerText || '').trim().length > 280);
+  if (longParagraph) signals.push('long-paragraph');
+
+  // Heuristic: video players imply media-focused experiences.
+  if (document.querySelector('video, [class*="player"], [id*="player"], [class*="video"], [data-player]')) {
+    signals.push('video-player');
+  }
+
+  // Heuristic: timelines and comment feeds usually show social or community pages.
+  if (document.querySelector('[role="feed"], .timeline, .comment, .comments, [class*="feed"], [id*="feed"]')) {
+    signals.push('feed-or-comments');
+  }
+
+  // Heuristic: product and price patterns suggest shopping intent.
+  const pricePattern = /\$\s?\d+|₹\s?\d+|€\s?\d+|£\s?\d+/.test(document.body?.innerText || '');
+  const commercePattern = /product|cart|checkout|shop|store|price/.test(host + path);
+  if (pricePattern || commercePattern) signals.push('commerce-signals');
+
+  // Weighted scoring keeps logic readable and easy to extend.
+  const scores = {
+    article: 0,
+    video: 0,
+    social: 0,
+    documentation: 0,
+    shopping: 0,
+    generic: 0.2
+  };
+
+  if (signals.includes('article-element')) scores.article += 0.35;
+  if (signals.includes('long-paragraph')) scores.article += 0.25;
+  if (signals.includes('documentation-container')) scores.documentation += 0.6;
+  if (signals.includes('video-player')) scores.video += 0.6;
+  if (signals.includes('feed-or-comments')) scores.social += 0.45;
+  if (signals.includes('commerce-signals')) scores.shopping += 0.6;
+
+  // Host-based hints for common platforms.
+  if (/youtube|vimeo|twitch|netflix/.test(host)) scores.video += 0.35;
+  if (/facebook|instagram|twitter|x\.com|reddit|discord/.test(host)) scores.social += 0.35;
+  if (/docs|developer|api|readthedocs|github\.io/.test(host)) scores.documentation += 0.25;
+  if (/amazon|ebay|shop|store|walmart|etsy/.test(host)) scores.shopping += 0.35;
+
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const [pageType, confidence] = sorted[0];
+
+  return {
+    pageType,
+    hostname,
+    confidence: Math.min(1, Math.max(0.1, Number(confidence.toFixed(2)))),
+    signals
+  };
+}
+
+function inferUserIntent(siteType, settingsFromStorage) {
+  const explicitIntent = (settingsFromStorage.userIntent || '').toLowerCase().trim();
+  if (explicitIntent) return explicitIntent;
+
+  const query = new URLSearchParams(window.location.search || '').get('q') || '';
+  const title = (document.title || '').toLowerCase();
+  const textHint = `${query} ${title}`.toLowerCase();
+
+  if (/learn|guide|tutorial|docs|how to/.test(textHint) || siteType === 'documentation') return 'learning';
+  if (/news|article|blog|read/.test(textHint) || siteType === 'article') return 'reading';
+  if (/buy|price|deal|product/.test(textHint) || siteType === 'commerce') return 'shopping';
+  if (settingsFromStorage.simplifyText || settingsFromStorage.jargonExplainer) return 'comprehension';
+  return 'general-browsing';
+}
+
+// ========== INTENT ANALYZER ===========
+
+function detectUserIntent(siteContext) {
+  const reasons = [];
+  const title = (document.title || '').toLowerCase();
+  const url = `${window.location.hostname}${window.location.pathname}`.toLowerCase();
+
+  // Heuristic: editors, docs, and code blocks imply focused work or study.
+  const hasEditor = !!document.querySelector('[contenteditable="true"], textarea, [role="textbox"], .monaco-editor, .CodeMirror');
+  if (hasEditor) reasons.push('editor-or-textbox');
+
+  const hasCodeBlocks = !!document.querySelector('pre code, .highlight, .code, [class*="code"], [class*="syntax"]');
+  if (hasCodeBlocks) reasons.push('code-blocks');
+
+  // Heuristic: long-form content suggests study/reading.
+  const textLength = (document.body?.innerText || '').trim().length;
+  if (textLength > 4000) reasons.push('long-form-text');
+
+  // Heuristic: video players or entertainment keywords signal relaxing.
+  const hasVideo = !!document.querySelector('video, [class*="player"], [id*="player"], [class*="video"]');
+  if (hasVideo) reasons.push('video-player');
+
+  const entertainmentPattern = /movie|music|playlist|stream|watch|gaming|fun|meme/.test(title + url);
+  if (entertainmentPattern) reasons.push('entertainment-keywords');
+
+  // Heuristic: chats and feeds indicate casual browsing or social time.
+  const hasChat = !!document.querySelector('[aria-label*="chat" i], [class*="chat"], [id*="chat"], [role="log"]');
+  if (hasChat) reasons.push('chat-ui');
+
+  const hasFeed = !!document.querySelector('[role="feed"], .timeline, [class*="feed"], [id*="feed"]');
+  if (hasFeed) reasons.push('feed-ui');
+
+  // Lightweight scoring for intent inference.
+  const scores = { work: 0, study: 0, browse: 0, relax: 0 };
+
+  if (hasEditor) scores.work += 0.45;
+  if (hasCodeBlocks) scores.work += 0.2;
+  if (siteContext.pageType === 'documentation') scores.study += 0.45;
+  if (textLength > 4000) scores.study += 0.3;
+  if (siteContext.pageType === 'article') scores.study += 0.2;
+  if (hasFeed || hasChat) scores.browse += 0.35;
+  if (siteContext.pageType === 'social') scores.browse += 0.3;
+  if (hasVideo) scores.relax += 0.45;
+  if (entertainmentPattern) scores.relax += 0.25;
+  if (siteContext.pageType === 'video') scores.relax += 0.2;
+
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const [intent, confidence] = sorted[0];
+
+  return {
+    intent,
+    confidence: Math.min(1, Math.max(0.1, Number(confidence.toFixed(2)))),
+    reasons
+  };
+}
+
+function getFilteringProfile(intent) {
+  const profiles = {
+    work: {
+      removeDistractions: true,
+      removeAnimations: true,
+      readingRuler: false,
+      jargonExplainer: false,
+      simplifyText: false,
+      structuredLayout: false
+    },
+    study: {
+      removeDistractions: true,
+      removeAnimations: false,
+      readingRuler: true,
+      jargonExplainer: true,
+      simplifyText: true,
+      structuredLayout: true
+    },
+    browse: {
+      removeDistractions: false,
+      removeAnimations: false,
+      readingRuler: false,
+      jargonExplainer: false,
+      simplifyText: false,
+      structuredLayout: false
+    },
+    relax: {
+      removeDistractions: false,
+      removeAnimations: false,
+      readingRuler: false,
+      jargonExplainer: false,
+      simplifyText: false,
+      structuredLayout: false
+    }
+  };
+
+  return profiles[intent] || profiles.browse;
+}
+
+function runFeatureSafely(summary, featureName, enabled, onEnable, onDisable) {
+  const decision = { feature: featureName, enabled: !!enabled, executed: false, error: null };
+  try {
+    if (enabled) {
+      if (typeof onEnable === 'function') onEnable();
+      decision.executed = true;
+    } else if (typeof onDisable === 'function') {
+      onDisable();
+      decision.executed = true;
+    }
+  } catch (error) {
+    decision.error = error?.message || 'Unknown error';
+  }
+  summary.decisions.push(decision);
+}
+
+// ========== FOCUS GUARD (ADHD SUPPORT) ===========
+
+function logFocusGuardDecision(summary, message, data = {}) {
+  summary.decisions.push({ feature: 'focus-guard', message, data, timestamp: Date.now() });
+  console.log('[FocusGuard]', message, data);
+}
+
+// Skim detector state (in-memory only)
+const SKIM_DETECTOR_CONFIG = {
+  speedThresholdPxPerSec: 2200,
+  directionFlipThreshold: 3,
+  sampleWindowMs: 2500,
+  cooldownMs: 9000,
+  minScrollDelta: 120
+};
+
+let skimDetectorState = {
+  lastY: window.scrollY,
+  lastTime: Date.now(),
+  directionFlips: 0,
+  sampleStart: Date.now(),
+  cooldownUntil: 0,
+  active: false
+};
+
+function startSkimDetector() {
+  if (skimDetectorState.active) return;
+  skimDetectorState.active = true;
+
+  window.addEventListener('scroll', () => {
+    const now = Date.now();
+    const currentY = window.scrollY;
+    const deltaY = currentY - skimDetectorState.lastY;
+    const deltaTime = now - skimDetectorState.lastTime;
+    if (Math.abs(deltaY) < SKIM_DETECTOR_CONFIG.minScrollDelta || deltaTime === 0) {
+      skimDetectorState.lastY = currentY;
+      skimDetectorState.lastTime = now;
+      return;
+    }
+
+    const speed = Math.abs(deltaY) / (deltaTime / 1000);
+    const direction = Math.sign(deltaY);
+    const prevDirection = Math.sign(skimDetectorState.lastY - (skimDetectorState.lastY - deltaY));
+
+    if (direction !== 0 && prevDirection !== 0 && direction !== prevDirection) {
+      skimDetectorState.directionFlips += 1;
+    }
+
+    const sampleAge = now - skimDetectorState.sampleStart;
+    if (sampleAge > SKIM_DETECTOR_CONFIG.sampleWindowMs) {
+      skimDetectorState.sampleStart = now;
+      skimDetectorState.directionFlips = 0;
+    }
+
+    const isErratic = skimDetectorState.directionFlips >= SKIM_DETECTOR_CONFIG.directionFlipThreshold;
+    const isFast = speed >= SKIM_DETECTOR_CONFIG.speedThresholdPxPerSec;
+    const inCooldown = now < skimDetectorState.cooldownUntil;
+
+    if (!inCooldown && (isErratic || isFast)) {
+      skimDetectorState.cooldownUntil = now + SKIM_DETECTOR_CONFIG.cooldownMs;
+      try {
+        createReadingRuler();
+      } catch (e) {
+        // fallback: show a subtle prompt
+        showNotification('Need help staying on track? Try the reading ruler.', 'loading');
+      }
+    }
+
+    skimDetectorState.lastY = currentY;
+    skimDetectorState.lastTime = now;
+  }, { passive: true });
+}
+
+function ensureDistractionStyles() {
+  if (document.getElementById('neuro-distraction-style')) return;
+  const style = document.createElement('style');
+  style.id = 'neuro-distraction-style';
+  style.textContent = `
+    .neuro-hidden-distraction {
+      display: none !important;
+      visibility: hidden !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function isProtectedElement(element) {
+  if (!element) return false;
+  const tag = (element.tagName || '').toLowerCase();
+  if (['main', 'article', 'nav', 'header', 'footer'].includes(tag)) return true;
+  if (element.getAttribute('role') === 'main') return true;
+  if (isMainContent(element)) return true;
+  return false;
+}
+
+function runDistractionHunter(siteContext) {
+  const summary = {
+    hiddenCount: 0,
+    hiddenSelectors: [],
+    warnings: []
+  };
+
+  try {
+    ensureDistractionStyles();
+
+    const baseSelectors = [
+      '.sidebar', '.right-rail', '.left-rail', '[class*="sidebar"]',
+      '[class*="recommend" i]', '[id*="recommend" i]',
+      '[class*="trending" i]', '[id*="trending" i]',
+      '[class*="promo" i]', '[id*="promo" i]',
+      '[class*="pop" i]', '[id*="popup" i]', '[class*="modal" i]', '[class*="overlay" i]',
+      '[class*="floating" i]', '[class*="sticky" i]',
+      '[class*="ad" i]', '[id*="ad" i]', '.adsbygoogle',
+      '[class*="recommendation" i]', '[id*="recommendation" i]',
+      '[class*="related" i]', '[id*="related" i]',
+      '[class*="autoplay" i]', '[id*="autoplay" i]',
+      '[class*="sponsor" i]', '[id*="sponsor" i]'
+    ];
+
+    const keywordHints = ['trending', 'recommended', 'suggested', 'sponsored', 'ad', 'promo', 'upsell', 'related'];
+
+    baseSelectors.forEach((selector) => {
+      let elements = [];
+      try {
+        elements = Array.from(document.querySelectorAll(selector));
+      } catch (e) {
+        summary.warnings.push(`Invalid selector: ${selector}`);
+        return;
+      }
+
+      elements.forEach((element) => {
+        if (isProtectedElement(element)) return;
+        const text = (element.innerText || '').toLowerCase();
+        const hasKeyword = keywordHints.some(keyword => text.includes(keyword));
+
+        if (hasKeyword || /ad|promo|sponsor/.test(element.className + element.id)) {
+          element.classList.add('neuro-hidden-distraction');
+          summary.hiddenCount += 1;
+          if (!summary.hiddenSelectors.includes(selector)) {
+            summary.hiddenSelectors.push(selector);
+          }
+        }
+      });
+    });
+  } catch (error) {
+    summary.warnings.push(error?.message || 'Distraction hunter failed');
+  }
+
+  return summary;
+}
+
+function runSkimDetector(summary) {
+  try {
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3'));
+    if (headings.length === 0) {
+      logFocusGuardDecision(summary, 'Skim detector skipped', { reason: 'no-headings' });
+      return;
+    }
+    headings.forEach((heading) => {
+      heading.style.scrollMarginTop = '12px';
+    });
+    startSkimDetector();
+    logFocusGuardDecision(summary, 'Skim detector active', { headings: headings.length });
+  } catch (error) {
+    logFocusGuardDecision(summary, 'Skim detector failed', { error: error?.message || 'Unknown error' });
+  }
+}
+
+// ========== EXECUTIVE FUNCTION AIDE: TASK ANCHOR ===========
+
+const TASK_ANCHOR_ID = 'neuro-task-anchor';
+const TASK_ANCHOR_STYLE_ID = 'neuro-task-anchor-style';
+const TASK_ANCHOR_DISMISS_KEY = 'neuroTaskAnchorDismissed';
+
+function createTaskAnchor(message = 'Stay with this page') {
+  if (sessionStorage.getItem(TASK_ANCHOR_DISMISS_KEY) === 'true') return;
+  if (document.getElementById(TASK_ANCHOR_ID)) return;
+
+  if (!document.getElementById(TASK_ANCHOR_STYLE_ID)) {
+    const style = document.createElement('style');
+    style.id = TASK_ANCHOR_STYLE_ID;
+    style.textContent = `
+      #${TASK_ANCHOR_ID} {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 1000002;
+        background: rgba(26, 26, 46, 0.92);
+        border: 1px solid rgba(108, 92, 231, 0.3);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-family: system-ui, sans-serif;
+        font-size: 12px;
+        color: #f2f2f7;
+        box-shadow: 0 8px 18px rgba(0,0,0,0.25);
+        max-width: 220px;
+        pointer-events: auto;
+      }
+      #${TASK_ANCHOR_ID} .anchor-title {
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      #${TASK_ANCHOR_ID} .anchor-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      #${TASK_ANCHOR_ID} button {
+        background: transparent;
+        border: none;
+        color: #c8c8d8;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      #${TASK_ANCHOR_ID} button:hover {
+        color: #ffffff;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const anchor = document.createElement('div');
+  anchor.id = TASK_ANCHOR_ID;
+  anchor.innerHTML = `
+    <div class="anchor-title">Task Anchor</div>
+    <div class="anchor-message">${message}</div>
+    <div class="anchor-actions">
+      <button type="button" id="neuro-anchor-dismiss">Dismiss</button>
+    </div>
+  `;
+
+  document.body.appendChild(anchor);
+
+  const dismissBtn = document.getElementById('neuro-anchor-dismiss');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => {
+      sessionStorage.setItem(TASK_ANCHOR_DISMISS_KEY, 'true');
+      removeTaskAnchor();
+    });
+  }
+}
+
+function updateTaskAnchor(message) {
+  const anchor = document.getElementById(TASK_ANCHOR_ID);
+  if (!anchor) {
+    createTaskAnchor(message);
+    return;
+  }
+  const msgEl = anchor.querySelector('.anchor-message');
+  if (msgEl) msgEl.textContent = message;
+}
+
+function removeTaskAnchor() {
+  document.getElementById(TASK_ANCHOR_ID)?.remove();
+}
+
+function runExecutiveFunctionAide(summary) {
+  try {
+    const formInputs = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+    if (formInputs.length === 0) {
+      logFocusGuardDecision(summary, 'Executive aide skipped', { reason: 'no-inputs' });
+      return;
+    }
+    formInputs.forEach((input) => {
+      if (!input.getAttribute('data-neuro-exec-aide')) {
+        input.setAttribute('data-neuro-exec-aide', 'true');
+        input.style.outline = '2px solid rgba(108,92,231,0.3)';
+        input.style.outlineOffset = '2px';
+      }
+    });
+    updateTaskAnchor('Focus target: reading');
+    logFocusGuardDecision(summary, 'Executive aide active', { inputs: formInputs.length });
+  } catch (error) {
+    logFocusGuardDecision(summary, 'Executive aide failed', { error: error?.message || 'Unknown error' });
+  }
+}
+
+function runFocusGuard(siteContext, intent, settings, summary) {
+  if (!siteContext || !settings) {
+    logFocusGuardDecision(summary, 'Focus guard skipped', { reason: 'missing-context-or-settings' });
+    return;
+  }
+
+  const isRelevantIntent = ['work', 'study', 'browse'].includes(intent.intent);
+  const isSupportedPage = ['article', 'documentation', 'generic', 'shopping'].includes(siteContext.pageType);
+
+  if (!isRelevantIntent || !isSupportedPage) {
+    logFocusGuardDecision(summary, 'Focus guard not activated', {
+      intent: intent.intent,
+      pageType: siteContext.pageType
+    });
+    return;
+  }
+
+  if (settings.removeDistractions) {
+    const distractionSummary = runDistractionHunter(siteContext);
+    logFocusGuardDecision(summary, 'Distraction hunter complete', distractionSummary);
+  }
+
+  if (intent.intent === 'study' || intent.intent === 'work') {
+    runSkimDetector(summary);
+  }
+
+  if (intent.intent === 'work') {
+    runExecutiveFunctionAide(summary);
+  }
+}
+
+// ========== SENSORY SHIELD (AUTISM SUPPORT) ===========
+
+function runLayoutStabilizer(summary) {
+  const localSummary = summary || { enabled: [], warnings: [] };
+  try {
+    const styleId = 'neuro-layout-stabilizer-style';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        * { scroll-behavior: auto !important; }
+        img, video, iframe { max-width: 100% !important; height: auto !important; }
+        .neuro-stabilized-media { transition: none !important; }
+        .neuro-sticky-guard { contain: layout paint !important; }
+      `;
+      document.head.appendChild(style);
+    }
+
+    const CONFIG = {
+      minMediaHeight: 180,
+      minEmbedHeight: 240,
+      maxObservationNodes: 30,
+      observerThrottleMs: 250,
+      aboveFoldMultiplier: 1.2
+    };
+
+    const reserveSpaceForMedia = (element, minHeight) => {
+      if (!element || element.classList.contains('neuro-stabilized-media')) return;
+      if (element.hasAttribute('width') || element.style.height) return;
+      const rect = element.getBoundingClientRect();
+      const width = rect.width || element.clientWidth || 0;
+      if (width === 0) return;
+      const estimatedHeight = Math.max(minHeight, Math.round(width * 0.56));
+      element.style.minHeight = `${estimatedHeight}px`;
+      element.classList.add('neuro-stabilized-media');
+    };
+
+    const stabilizeInitialMedia = () => {
+      const elements = document.querySelectorAll('img, video, iframe, embed, object');
+      elements.forEach((el) => {
+        const rect = el.getBoundingClientRect();
+        if (rect.top > window.innerHeight * CONFIG.aboveFoldMultiplier) return;
+        const isEmbed = ['iframe', 'embed', 'object'].includes((el.tagName || '').toLowerCase());
+        reserveSpaceForMedia(el, isEmbed ? CONFIG.minEmbedHeight : CONFIG.minMediaHeight);
+      });
+    };
+
+    const stabilizeStickyElements = () => {
+      const candidates = Array.from(document.querySelectorAll('header, nav, [class*="sticky"], [class*="fixed"], [id*="sticky"], [id*="fixed"]'));
+      candidates.forEach((element) => {
+        if (isProtectedElement(element)) return;
+        const style = window.getComputedStyle(element);
+        if (!['fixed', 'sticky'].includes(style.position)) return;
+        const rect = element.getBoundingClientRect();
+        if (rect.top > 20 || rect.height < 40) return;
+        element.style.minHeight = `${Math.max(rect.height, 40)}px`;
+        element.classList.add('neuro-sticky-guard');
+      });
+    };
+
+    stabilizeInitialMedia();
+    stabilizeStickyElements();
+
+    let lastObserverRun = 0;
+    const observer = new MutationObserver((mutations) => {
+      const now = Date.now();
+      if (now - lastObserverRun < CONFIG.observerThrottleMs) return;
+      lastObserverRun = now;
+
+      const addedNodes = [];
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) addedNodes.push(node);
+        });
+      });
+
+      if (addedNodes.length === 0) return;
+
+      const nodesToScan = addedNodes.slice(0, CONFIG.maxObservationNodes);
+      nodesToScan.forEach((node) => {
+        const rect = node.getBoundingClientRect?.();
+        if (!rect || rect.top > window.innerHeight * CONFIG.aboveFoldMultiplier) return;
+        if (['IMG', 'VIDEO', 'IFRAME', 'EMBED', 'OBJECT'].includes(node.tagName)) {
+          const isEmbed = ['IFRAME', 'EMBED', 'OBJECT'].includes(node.tagName);
+          reserveSpaceForMedia(node, isEmbed ? CONFIG.minEmbedHeight : CONFIG.minMediaHeight);
+        }
+      });
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+    localSummary.enabled.push('layoutStabilizer');
+  } catch (error) {
+    localSummary.warnings.push(error?.message || 'Layout stabilizer failed');
+  }
+
+  return localSummary;
+}
+
+function runVisualHarmonizer(summary) {
+  const localSummary = summary || { enabled: [], warnings: [] };
+  try {
+    const styleId = 'neuro-visual-harmonizer-style';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        .neuro-harmonize {
+          background-color: var(--neuro-harmonize-bg) !important;
+          border: 1px solid var(--neuro-harmonize-border) !important;
+          border-radius: 12px !important;
+        }
+        .neuro-harmonize h1,
+        .neuro-harmonize h2,
+        .neuro-harmonize h3,
+        .neuro-harmonize h4,
+        .neuro-harmonize p,
+        .neuro-harmonize li,
+        .neuro-harmonize span:not([class*="icon"]):not([class*="emoji"]) {
+          color: var(--neuro-harmonize-text) !important;
+        }
+        .neuro-harmonize a { color: var(--neuro-harmonize-link) !important; }
+        .neuro-harmonize img,
+        .neuro-harmonize svg,
+        .neuro-harmonize canvas,
+        .neuro-harmonize video,
+        .neuro-harmonize pre,
+        .neuro-harmonize code {
+          filter: none !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    if (currentSettings.softColors) {
+      applySoftColors();
+    }
+
+    const paletteMap = {
+      creamSepia: { bg: '#F5EEDC', border: '#D6C7A8', text: '#332C2B', link: '#5B4BC4' },
+      sageGreen: { bg: '#D1E8E2', border: '#A7C6BC', text: '#2C3531', link: '#3A5A50' },
+      softCharcoal: { bg: '#1A1A2E', border: '#3B3B5C', text: '#E0E0E0', link: '#A9B8FF' }
+    };
+
+    const selected = paletteMap[currentSettings.themePalette] || (currentSettings.themeMode === 'dark' ? paletteMap.softCharcoal : paletteMap.creamSepia);
+    document.documentElement.style.setProperty('--neuro-harmonize-bg', selected.bg);
+    document.documentElement.style.setProperty('--neuro-harmonize-border', selected.border);
+    document.documentElement.style.setProperty('--neuro-harmonize-text', selected.text);
+    document.documentElement.style.setProperty('--neuro-harmonize-link', selected.link);
+
+    const parseColor = (color) => {
+      const match = color.match(/rgba?\(([^)]+)\)/i);
+      if (!match) return null;
+      const parts = match[1].split(',').map(v => parseFloat(v.trim()));
+      return { r: parts[0], g: parts[1], b: parts[2], a: parts[3] ?? 1 };
+    };
+
+    const luminance = ({ r, g, b }) => {
+      const toLinear = (v) => {
+        const val = v / 255;
+        return val <= 0.03928 ? val / 12.92 : Math.pow((val + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+    };
+
+    const contrastRatio = (fg, bg) => {
+      const l1 = luminance(fg) + 0.05;
+      const l2 = luminance(bg) + 0.05;
+      return l1 > l2 ? l1 / l2 : l2 / l1;
+    };
+
+    const candidates = Array.from(document.querySelectorAll('section, article, main, div, aside'));
+    const maxScan = 180;
+    let harmonized = 0;
+
+    candidates.slice(0, maxScan).forEach((el) => {
+      const rect = el.getBoundingClientRect();
+      if (rect.height < 120 || rect.width < 260) return;
+      if (rect.top > window.innerHeight * 1.5) return;
+
+      const tag = (el.tagName || '').toLowerCase();
+      if (['nav', 'header', 'footer', 'aside'].includes(tag)) return;
+      if (el.querySelector('canvas, video, svg, pre, code')) return;
+
+      const styles = window.getComputedStyle(el);
+      const bg = parseColor(styles.backgroundColor);
+      const fg = parseColor(styles.color);
+      if (!bg || !fg || bg.a === 0) return;
+
+      const ratio = contrastRatio(fg, bg);
+      const intenseBackground = luminance(bg) < 0.08 || luminance(bg) > 0.92;
+
+      if (ratio > 7 || intenseBackground) {
+        el.classList.add('neuro-harmonize');
+        harmonized += 1;
+      }
+    });
+
+    localSummary.enabled.push('visualHarmonizer');
+    localSummary.harmonizedCount = harmonized;
+  } catch (error) {
+    localSummary.warnings.push(error?.message || 'Visual harmonizer failed');
+  }
+
+  return localSummary;
+}
+
+let motionSilencerObserver = null;
+
+function startMotionSilencer() {
+  const styleId = 'neuro-motion-silencer-style';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      * {
+        animation-duration: 0s !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0s !important;
+        scroll-behavior: auto !important;
+      }
+      [style*="parallax" i],
+      [class*="parallax" i],
+      [data-parallax],
+      [data-scroll],
+      [style*="background-attachment: fixed" i] {
+        background-attachment: initial !important;
+        transform: none !important;
+      }
+      video[autoplay],
+      video[loop],
+      video[muted][autoplay] {
+        animation: none !important;
+      }
+      img[src$=".gif" i],
+      img[src*=".gif?" i] {
+        animation: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  document.querySelectorAll('video, audio').forEach(media => {
+    try { media.pause(); } catch (e) {}
+  });
+
+  if (motionSilencerObserver) motionSilencerObserver.disconnect();
+  motionSilencerObserver = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.addedNodes.forEach((node) => {
+        if (!(node instanceof HTMLElement)) return;
+        node.querySelectorAll?.('video, audio').forEach(media => {
+          try { media.pause(); } catch (e) {}
+        });
+        if (node.tagName === 'VIDEO' || node.tagName === 'AUDIO') {
+          try { node.pause(); } catch (e) {}
+        }
+      });
+    });
+  });
+  motionSilencerObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopMotionSilencer() {
+  document.getElementById('neuro-motion-silencer-style')?.remove();
+  if (motionSilencerObserver) {
+    motionSilencerObserver.disconnect();
+    motionSilencerObserver = null;
+  }
+}
+
+function runMotionSilencer(summary) {
+  const localSummary = summary || { enabled: [], warnings: [] };
+  try {
+    if (currentSettings.removeAnimations) {
+      startMotionSilencer();
+      localSummary.enabled.push('motionSilencer');
+    } else {
+      stopMotionSilencer();
+      localSummary.warnings.push('Remove animations disabled; motion silencer skipped');
+    }
+  } catch (error) {
+    localSummary.warnings.push(error?.message || 'Motion silencer failed');
+  }
+  return localSummary;
+}
+
+function runSensoryShield(siteContext, settings) {
+  const summary = { enabled: [], warnings: [], pageType: siteContext?.pageType || 'unknown' };
+
+  if (!settings) {
+    summary.warnings.push('Missing settings');
+    return summary;
+  }
+
+  const isRelevantPage = ['article', 'documentation', 'generic', 'shopping'].includes(siteContext?.pageType);
+  if (!isRelevantPage) {
+    summary.warnings.push('Page type not suitable for sensory shield');
+    return summary;
+  }
+
+  runLayoutStabilizer(summary);
+  runVisualHarmonizer(summary);
+  runMotionSilencer(summary);
+
+  return summary;
+}
+
+// ========== LITERACY ALLY (DYSLEXIA SUPPORT) ===========
+
+function runTypographicEngine(summary) {
+  const localSummary = summary || { enabled: [], warnings: [] };
+  try {
+    const styleId = 'neuro-typographic-engine-style';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        /* Dyslexia-friendly typography: improve spacing and line height */
+        *:not(pre):not(code):not(kbd):not(samp):not(svg):not(path):not([class*="icon"]):not([class*="emoji"]) {
+          font-family: 'OpenDyslexic', 'Atkinson Hyperlegible', 'Comic Neue', 'Segoe UI', Arial, sans-serif !important;
+          letter-spacing: 0.04em !important;
+          word-spacing: 0.08em !important;
+          line-height: 1.65 !important;
+        }
+        p, li, .text-content {
+          font-size: 18px !important;
+          margin-bottom: 1.1em !important;
+        }
+        h1 { font-size: 1.9em !important; }
+        h2 { font-size: 1.6em !important; }
+        h3 { font-size: 1.35em !important; }
+      `;
+      document.head.appendChild(style);
+    }
+
+    if (currentSettings.readingRuler) createReadingRuler();
+    localSummary.enabled.push('typographicEngine');
+  } catch (error) {
+    localSummary.warnings.push(error?.message || 'Typographic engine failed');
+  }
+  return localSummary;
+}
+
+function runJargonTranslator(summary) {
+  try {
+    initJargonExplainer();
+    summary.enabled.push('jargonTranslator');
+  } catch (error) {
+    summary.warnings.push(error?.message || 'Jargon translator failed');
+  }
+}
+
+function runToneDecoder(summary, siteContext) {
+  try {
+    const isReadingPage = ['article', 'documentation', 'generic'].includes(siteContext?.pageType);
+    if (!isReadingPage) {
+      summary.warnings.push('Tone decoder skipped for non-reading page');
+      return;
+    }
+    initToneDecoder();
+    summary.enabled.push('toneDecoder');
+  } catch (error) {
+    summary.warnings.push(error?.message || 'Tone decoder failed');
+  }
+}
+
+function runLiteracyAlly(siteContext, settings) {
+  const summary = { enabled: [], warnings: [], pageType: siteContext?.pageType || 'unknown' };
+
+  if (!settings) {
+    summary.warnings.push('Missing settings');
+    return summary;
+  }
+
+  if (settings.dyslexicFont || settings.readingRuler) {
+    runTypographicEngine(summary);
+  }
+
+  if (settings.jargonExplainer) {
+    runJargonTranslator(summary);
+  }
+
+  return summary;
+}
+
+async function runMasterOrchestrator() {
+  const summary = {
+    siteType: 'unknown',
+    userIntent: 'general-browsing',
+    enabledSettings: {},
+    decisions: [],
+    timestamp: Date.now()
+  };
+
+  if (!document || !document.body) {
+    summary.decisions.push({ feature: 'bootstrap', enabled: true, executed: false, error: 'Document body unavailable' });
+    return summary;
+  }
+
+  const settingsFromStorage = await getEnabledSettingsFromStorage();
+  currentSettings = { ...currentSettings, ...settingsFromStorage };
+
+  const context = detectSiteContext();
+  const siteType = context.pageType === 'generic' ? 'general-content' : context.pageType;
+  const userIntent = detectUserIntent(context);
+  const filteringProfile = getFilteringProfile(userIntent.intent);
+
+  summary.siteType = siteType;
+  summary.userIntent = userIntent.intent;
+  summary.intentProfile = filteringProfile;
+  summary.context = context;
+  summary.enabledSettings = { ...settingsFromStorage };
+
+  const shouldUseStructuredLayout =
+    (settingsFromStorage.removeDistractions || settingsFromStorage.simplifyText || settingsFromStorage.softColors) &&
+    ['article', 'documentation', 'general-content'].includes(siteType);
+
+  const shouldUseJargonExplainer =
+    settingsFromStorage.jargonExplainer &&
+    ['study', 'browse'].includes(userIntent.intent);
+
+  runFeatureSafely(summary, 'dyslexicFont', settingsFromStorage.dyslexicFont, applyDyslexiaFont, removeDyslexiaFont);
+  runFeatureSafely(summary, 'softColors', settingsFromStorage.softColors, applySoftColors, removeSoftColors);
+
+  runFeatureSafely(
+    summary,
+    'removeDistractions',
+    settingsFromStorage.removeDistractions,
+    () => {
+      removeDistractions();
+      startDistractionObserver();
+    },
+    () => {
+      stopDistractionObserver();
+    }
+  );
+
+  runFeatureSafely(summary, 'readingRuler', settingsFromStorage.readingRuler, createReadingRuler, removeReadingRuler);
+
+  runFeatureSafely(
+    summary,
+    'removeAnimations',
+    settingsFromStorage.removeAnimations,
+    () => {
+      removeAnimations();
+      startAnimationObserver();
+    },
+    () => {
+      stopAnimationObserver();
+    }
+  );
+
+  runFeatureSafely(summary, 'jargonExplainer', shouldUseJargonExplainer, initJargonExplainer, null);
+  runFeatureSafely(summary, 'toneDecoder', settingsFromStorage.toneDecoder, initToneDecoder, removeToneDecoder);
+  runFeatureSafely(summary, 'structuredLayout', shouldUseStructuredLayout, applyStructuredLayout, removeStructuredLayout);
+
+  runFocusGuard(context, userIntent, settingsFromStorage, summary);
+
+  const sensorySummary = runSensoryShield(context, settingsFromStorage);
+  summary.decisions.push({ feature: 'sensory-shield', ...sensorySummary });
+
+  const literacySummary = runLiteracyAlly(context, settingsFromStorage);
+  summary.decisions.push({ feature: 'literacy-ally', ...literacySummary });
+
+  console.log('Master Orchestrator summary:', summary);
+  return summary;
 }
 
 // ========== 1. DYSLEXIA FONT ==========
@@ -222,6 +1294,231 @@ function removeSoftColors() {
   document.getElementById('neuro-colors-style')?.remove();
 }
 
+function getCleanDOM() {
+  const clone = document.body.cloneNode(true);
+  const noise = clone.querySelectorAll('script, style, svg, noscript, iframe');
+  noise.forEach(el => el.remove());
+  const allElements = clone.querySelectorAll('*');
+  allElements.forEach(el => {
+    if (el.children.length === 0 && el.textContent.trim() === '') {
+      el.remove();
+    }
+  });
+  return clone.innerHTML;
+}
+
+// ========== STRUCTURED WEBSITE LAYOUT ==========
+
+function applyStructuredLayout() {
+  let style = document.getElementById('neuro-structured-layout-style');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'neuro-structured-layout-style';
+    document.head.appendChild(style);
+  }
+
+  document.body.classList.add('neuro-structured-page');
+
+  const mainContent = findMainContent();
+  if (mainContent) {
+    document.querySelectorAll('.neuro-main-container').forEach(el => {
+      if (el !== mainContent) el.classList.remove('neuro-main-container');
+    });
+
+    mainContent.classList.add('neuro-main-container');
+    mainContent.setAttribute('data-neuro-main-container', 'true');
+
+    // Turn meaningful direct children into readable blocks/cards
+    Array.from(mainContent.children).forEach((child) => {
+      if (!child || child.id === 'neuro-topbar') return;
+
+      const tag = (child.tagName || '').toLowerCase();
+      const text = (child.innerText || '').trim();
+
+      const goodBlock =
+        ['section', 'article', 'div', 'p', 'ul', 'ol', 'blockquote'].includes(tag) &&
+        text.length > 60;
+
+      if (goodBlock) {
+        child.classList.add('neuro-content-block');
+      }
+    });
+  }
+
+  style.textContent = `
+    body.neuro-structured-page {
+      padding-top: 12px !important;
+      line-height: 1.7 !important;
+      scroll-behavior: smooth !important;
+    }
+
+    body.neuro-structured-page main,
+    body.neuro-structured-page article,
+    body.neuro-structured-page [role="main"],
+    body.neuro-structured-page .main-content,
+    body.neuro-structured-page #content,
+    body.neuro-structured-page #main-content,
+    body.neuro-structured-page .post-content,
+    body.neuro-structured-page .entry-content {
+      max-width: 960px !important;
+      margin-left: auto !important;
+      margin-right: auto !important;
+      padding-left: 20px !important;
+      padding-right: 20px !important;
+    }
+
+    body.neuro-structured-page .neuro-main-container {
+      max-width: 960px !important;
+      margin: 20px auto !important;
+      padding: 8px 20px 40px 20px !important;
+      border-radius: 20px !important;
+    }
+
+    body.neuro-structured-page h1 {
+      font-size: 2rem !important;
+      line-height: 1.2 !important;
+      margin: 0 0 18px 0 !important;
+      padding: 16px 18px !important;
+      border-radius: 18px !important;
+      background: rgba(108, 92, 231, 0.10) !important;
+      border: 1px solid rgba(108, 92, 231, 0.18) !important;
+    }
+
+    body.neuro-structured-page h2,
+    body.neuro-structured-page h3 {
+      margin-top: 24px !important;
+      margin-bottom: 12px !important;
+      padding: 10px 14px !important;
+      border-radius: 14px !important;
+      background: rgba(108, 92, 231, 0.06) !important;
+      border-left: 4px solid #6c5ce7 !important;
+    }
+
+    body.neuro-structured-page p,
+    body.neuro-structured-page li {
+      max-width: 75ch !important;
+      font-size: 1.02rem !important;
+      margin-bottom: 1em !important;
+    }
+
+    body.neuro-structured-page img,
+    body.neuro-structured-page video,
+    body.neuro-structured-page table,
+    body.neuro-structured-page pre,
+    body.neuro-structured-page blockquote {
+      border-radius: 16px !important;
+      overflow: hidden !important;
+      margin-top: 16px !important;
+      margin-bottom: 16px !important;
+    }
+
+    body.neuro-structured-page .neuro-content-block {
+      background: rgba(255, 255, 255, 0.04) !important;
+      border: 1px solid rgba(108, 92, 231, 0.10) !important;
+      border-radius: 18px !important;
+      padding: 16px 18px !important;
+      margin: 14px 0 !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.06) !important;
+    }
+
+    body.neuro-structured-page section,
+    body.neuro-structured-page article section,
+    body.neuro-structured-page [role="region"] {
+      border-radius: 18px !important;
+    }
+
+    body.neuro-structured-page aside,
+    body.neuro-structured-page .sidebar,
+    body.neuro-structured-page .right-rail,
+    body.neuro-structured-page .left-rail {
+      display: none !important;
+    }
+
+  `;
+}
+
+function removeStructuredLayout() {
+  document.body.classList.remove('neuro-structured-page');
+  document.getElementById('neuro-structured-layout-style')?.remove();
+
+  document.querySelectorAll('.neuro-main-container').forEach(el => {
+    el.classList.remove('neuro-main-container');
+    el.removeAttribute('data-neuro-main-container');
+  });
+
+  document.querySelectorAll('.neuro-content-block').forEach(el => {
+    el.classList.remove('neuro-content-block');
+  });
+}
+
+function applyFocusMode(mainContentSelector, distractionSelectors) {
+  if (!document.getElementById('neuro-focus-mode-style')) {
+    const style = document.createElement('style');
+    style.id = 'neuro-focus-mode-style';
+    style.textContent = `
+      .focus-mode {
+        outline: 2px solid rgba(108,92,231,0.35);
+        outline-offset: 6px;
+        border-radius: 6px;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  if (mainContentSelector) {
+    const mainEl = document.querySelector(mainContentSelector);
+    if (mainEl) {
+      mainEl.classList.add('focus-mode');
+      mainEl.setAttribute('data-neuro-main', 'true');
+    }
+  }
+
+  if (Array.isArray(distractionSelectors)) {
+    distractionSelectors.forEach(selector => {
+      try {
+        document.querySelectorAll(selector).forEach(el => {
+          el.style.display = 'none';
+          el.setAttribute('data-neuro-hidden', 'true');
+        });
+      } catch (e) { }
+    });
+  }
+}
+
+async function analyzePageStructure() {
+  try {
+    const cleanedHTML = getCleanDOM();
+    if (!cleanedHTML || cleanedHTML.length < 50) {
+      throw new Error('DOM content is empty');
+    }
+    const maxLength = 200000;
+    if (cleanedHTML.length > maxLength) {
+      throw new Error('DOM too large for analysis');
+    }
+
+    const response = await new Promise((resolve, reject) => {
+      safeSendMessage({ action: 'analyzePageStructure', html: cleanedHTML }, (result, error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(result);
+      });
+    });
+
+    if (!response?.success || !response.data) {
+      throw new Error(response?.error || 'AI analysis failed');
+    }
+
+    const { navSelector, mainContentSelector, distractions } = response.data;
+    applyFocusMode(mainContentSelector, distractions);
+    return { navSelector, mainContentSelector, distractions };
+  } catch (error) {
+    console.warn('analyzePageStructure error:', error);
+    return { error: error.message };
+  }
+}
+
 // ========== 3. REMOVE DISTRACTIONS ==========
 
 const distractionSelectors = [
@@ -242,7 +1539,7 @@ function removeDistractions() {
           el.setAttribute('data-neuro-hidden', 'true');
         }
       });
-    } catch(e) {}
+    } catch (e) { }
   });
   hideHighDistractionElements();
 }
@@ -286,11 +1583,11 @@ function stopDistractionObserver() {
 
 function createReadingRuler() {
   if (readingRulerElement) return;
-  
+
   readingRulerElement = document.createElement('div');
   readingRulerElement.id = 'neuro-reading-ruler';
   readingRulerElement.innerHTML = `<div class="ruler-line"></div><div class="ruler-controls"><button class="ruler-up">▲</button><button class="ruler-down">▼</button></div>`;
-  
+
   const style = document.createElement('style');
   style.textContent = `
     #neuro-reading-ruler { position: fixed; left: 0; right: 0; z-index: 999999; pointer-events: none; }
@@ -298,18 +1595,18 @@ function createReadingRuler() {
     #neuro-reading-ruler .ruler-controls { position: absolute; right: 10px; top: -15px; display: flex; gap: 5px; pointer-events: auto; }
     #neuro-reading-ruler .ruler-controls button { width: 24px; height: 24px; background: #6c5ce7; color: white; border: none; border-radius: 4px; cursor: pointer; }
   `;
-  
+
   document.head.appendChild(style);
   document.body.appendChild(readingRulerElement);
-  
+
   const rulerLine = readingRulerElement.querySelector('.ruler-line');
   const rulerUp = readingRulerElement.querySelector('.ruler-up');
   const rulerDown = readingRulerElement.querySelector('.ruler-down');
-  
+
   if (!rulerLine) return;
-  
+
   let currentLineHeight = window.scrollY + 200;
-  
+
   const updateRulerPosition = () => {
     try {
       const selection = window.getSelection();
@@ -321,12 +1618,12 @@ function createReadingRuler() {
       }
       readingRulerElement.style.top = (currentLineHeight - 15) + 'px';
       rulerLine.style.top = '15px';
-    } catch(e) {}
+    } catch (e) { }
   };
-  
+
   if (rulerUp) rulerUp.addEventListener('click', () => { currentLineHeight -= 30; readingRulerElement.style.top = (currentLineHeight - 15) + 'px'; });
   if (rulerDown) rulerDown.addEventListener('click', () => { currentLineHeight += 30; readingRulerElement.style.top = (currentLineHeight - 15) + 'px'; });
-  
+
   window.addEventListener('scroll', updateRulerPosition);
   document.addEventListener('mousemove', (e) => {
     const selection = window.getSelection();
@@ -375,10 +1672,10 @@ function stopAnimationObserver() {
 async function calculateAndDisplayCognitiveScore() {
   try {
     const score = await calculateCognitiveLoad();
-    
+
     // Safe message send
     safeSendMessage({ action: 'saveCognitiveScore', score: score.score });
-    
+
     if (!cognitiveScoreDisplay) {
       cognitiveScoreDisplay = document.createElement('div');
       cognitiveScoreDisplay.id = 'neuro-cognitive-score';
@@ -392,10 +1689,10 @@ async function calculateAndDisplayCognitiveScore() {
       cognitiveScoreDisplay.onclick = () => showDetailedCognitiveReport(score);
       document.body.appendChild(cognitiveScoreDisplay);
     }
-    
+
     const scoreColor = score.score < 40 ? '#00b894' : (score.score < 70 ? '#fdcb6e' : '#e74c3c');
     cognitiveScoreDisplay.innerHTML = `🧠 Cognitive Load: <span style="color:${scoreColor}; font-weight:bold;">${score.score}</span>/${score.max}<span style="font-size:10px; margin-left:5px;">ⓘ</span>`;
-  } catch(e) {
+  } catch (e) {
     console.log('Cognitive scoring error:', e);
   }
 }
@@ -403,9 +1700,9 @@ async function calculateAndDisplayCognitiveScore() {
 async function calculateCognitiveLoad() {
   const elements = document.querySelectorAll('*');
   const viewportArea = window.innerWidth * window.innerHeight;
-  
+
   const visualDensity = Math.min((elements.length * 10000) / viewportArea, 100);
-  
+
   const colors = new Set();
   const sampleSize = Math.min(100, elements.length);
   for (let i = 0; i < sampleSize; i++) {
@@ -414,13 +1711,13 @@ async function calculateCognitiveLoad() {
     colors.add(styles.backgroundColor);
   }
   const colorVariance = Math.min(colors.size * 5, 100);
-  
+
   let motionCount = 0;
   for (const el of elements) {
     if (window.getComputedStyle(el).animation !== 'none') motionCount++;
   }
   const motionAmount = Math.min(motionCount * 5, 100);
-  
+
   const paragraphs = document.querySelectorAll('p');
   let textComplexity = 0;
   for (const p of paragraphs) {
@@ -433,12 +1730,12 @@ async function calculateCognitiveLoad() {
       textComplexity = (textComplexity + Math.max(0, complexity)) / 2;
     }
   }
-  
+
   let depth = 0;
   let current = document.activeElement;
   while (current && current !== document.body) { depth++; current = current.parentElement; }
   const navigationDepth = Math.min(depth * 10, 100);
-  
+
   const weights = { visualDensity: 0.25, colorVariance: 0.20, motionAmount: 0.20, textComplexity: 0.25, navigationDepth: 0.10 };
   const totalScore = Math.round(
     visualDensity * weights.visualDensity +
@@ -447,7 +1744,7 @@ async function calculateCognitiveLoad() {
     textComplexity * weights.textComplexity +
     navigationDepth * weights.navigationDepth
   );
-  
+
   return {
     score: totalScore,
     max: 100,
@@ -459,13 +1756,13 @@ async function calculateCognitiveLoad() {
 function showDetailedCognitiveReport(score) {
   const existing = document.getElementById('neuro-cognitive-report');
   if (existing) existing.remove();
-  
+
   const report = document.createElement('div');
   report.id = 'neuro-cognitive-report';
   report.innerHTML = `
     <div style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:1000002; background:#1a1a2e; border-radius:16px; padding:20px; max-width:400px; width:90%; box-shadow:0 20px 40px rgba(0,0,0,0.4); border:1px solid #6c5ce7; font-family:system-ui,sans-serif; color:#eee;">
       <h3 style="margin:0 0 15px 0; color:#6c5ce7;">🧠 Cognitive Load Report</h3>
-      <div style="margin-bottom:15px;"><span style="font-size:36px; font-weight:bold;">${score.score}</span><span style="color:#888;">/100</span> - <span style="color:${score.score<40?'#00b894':(score.score<70?'#fdcb6e':'#e74c3c')}">${score.level} Load</span></div>
+      <div style="margin-bottom:15px;"><span style="font-size:36px; font-weight:bold;">${score.score}</span><span style="color:#888;">/100</span> - <span style="color:${score.score < 40 ? '#00b894' : (score.score < 70 ? '#fdcb6e' : '#e74c3c')}">${score.level} Load</span></div>
       <div style="margin-bottom:12px;"><div style="display:flex; justify-content:space-between;"><span>Visual Density</span><span>${Math.round(score.breakdown.visualDensity)}%</span></div><div style="height:4px; background:#2d2d44; border-radius:2px;"><div style="width:${score.breakdown.visualDensity}%; height:4px; background:#6c5ce7; border-radius:2px;"></div></div></div>
       <div style="margin-bottom:12px;"><div style="display:flex; justify-content:space-between;"><span>Color Variance</span><span>${Math.round(score.breakdown.colorVariance)}%</span></div><div style="height:4px; background:#2d2d44; border-radius:2px;"><div style="width:${score.breakdown.colorVariance}%; height:4px; background:#6c5ce7; border-radius:2px;"></div></div></div>
       <div style="margin-bottom:12px;"><div style="display:flex; justify-content:space-between;"><span>Motion/Animations</span><span>${Math.round(score.breakdown.motionAmount)}%</span></div><div style="height:4px; background:#2d2d44; border-radius:2px;"><div style="width:${score.breakdown.motionAmount}%; height:4px; background:#6c5ce7; border-radius:2px;"></div></div></div>
@@ -485,7 +1782,7 @@ function findMainContent() {
     const element = document.querySelector(selector);
     if (element && element.innerText.trim().length > 500) return element;
   }
-  
+
   let maxText = 0, best = null;
   document.querySelectorAll('div, section, main, article').forEach(el => {
     const textLen = el.innerText.trim().length;
@@ -497,27 +1794,27 @@ function findMainContent() {
 
 async function simplifyPageWithAI() {
   const mainContent = findMainContent();
-  if (!mainContent) { 
-    showNotification('Could not find content on this page', 'error'); 
-    return; 
+  if (!mainContent) {
+    showNotification('Could not find content on this page', 'error');
+    return;
   }
-  
+
   const textElements = mainContent.querySelectorAll('p, li');
-  if (textElements.length === 0) { 
-    showNotification('No text found to simplify', 'error'); 
-    return; 
+  if (textElements.length === 0) {
+    showNotification('No text found to simplify', 'error');
+    return;
   }
-  
+
   const textToSimplify = [];
   for (const el of textElements) {
     if (el.innerText.trim().length > 80) textToSimplify.push({ element: el, text: el.innerText });
   }
-  
+
   let combinedText = textToSimplify.map(t => t.text).join(' ');
   if (combinedText.length > 2500) combinedText = combinedText.substring(0, 2500);
-  
+
   showNotification('AI is simplifying this page...', 'loading');
-  
+
   // Safe message send
   safeSendMessage({ action: 'simplifyText', text: combinedText }, (response, error) => {
     if (error) {
@@ -546,7 +1843,7 @@ async function simplifyPageWithAI() {
 }
 
 function applyBasicSimplification(textToSimplify) {
-  const replacements = { 'utilize':'use', 'implement':'use', 'additional':'more', 'purchase':'buy', 'numerous':'many', 'facilitate':'help', 'terminate':'end', 'demonstrate':'show', 'consequently':'so', 'nevertheless':'but', 'furthermore':'also', 'approximately':'about', 'significant':'big', 'substantial':'large' };
+  const replacements = { 'utilize': 'use', 'implement': 'use', 'additional': 'more', 'purchase': 'buy', 'numerous': 'many', 'facilitate': 'help', 'terminate': 'end', 'demonstrate': 'show', 'consequently': 'so', 'nevertheless': 'but', 'furthermore': 'also', 'approximately': 'about', 'significant': 'big', 'substantial': 'large' };
   for (const item of textToSimplify) {
     let text = item.text;
     for (const [complex, simple] of Object.entries(replacements)) {
@@ -565,7 +1862,7 @@ function applyBasicSimplification(textToSimplify) {
 function showNotification(message, type) {
   const existing = document.getElementById('neuro-notification');
   if (existing) existing.remove();
-  
+
   const colors = { loading: '#6c5ce7', success: '#00b894', error: '#e74c3c' };
   const notification = document.createElement('div');
   notification.id = 'neuro-notification';
@@ -577,76 +1874,81 @@ function showNotification(message, type) {
 
 // ========== 8. JARGON EXPLAINER ==========
 
-const jargonDictionary = {
-  'algorithm': 'A step-by-step recipe to solve a problem',
-  'api': 'A way for programs to talk to each other',
-  'cache': 'Temporary storage for quick access',
-  'database': 'Organized collection of information',
-  'encryption': 'Scrambling data so only authorized people can read it',
-  'latency': 'Delay before data transfer begins',
-  'server': 'A computer that provides services to other computers',
-  'syntax': 'Rules for writing code correctly',
-  'leverage': 'Use something to maximum advantage',
-  'synergy': 'Working together for better results',
-  'paradigm': 'A typical example or pattern',
-  'revenue': 'Money coming in',
-  'diagnosis': 'Identifying a disease from symptoms',
-  'chronic': 'Long-lasting or recurring',
-  'acute': 'Sudden and severe but short',
-  'jurisdiction': 'Official power to make legal decisions',
-  'plaintiff': 'Person who brings a lawsuit',
-  'defendant': 'Person being sued',
-  'quantitative': 'Related to numbers',
-  'qualitative': 'Related to qualities',
-  'hypothesis': 'An educated guess to test',
-  'empirical': 'Based on observation, not theory'
-};
+const jargonCache = new Map();
+const jargonPending = new Map();
 
 function isJargonWord(word) {
   const clean = word.toLowerCase().replace(/[^a-z]/g, '');
   if (clean.length < 5) return false;
-  if (jargonDictionary[clean]) return true;
-  const common = ['the','and','for','are','but','not','you','with','have','this','that','from','they','will','would','could','should','about','there','their','which'];
+  // if (jargonDictionary[clean]) return true; // Removed to prevent ReferenceError
+  const common = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'with', 'have', 'this', 'that', 'from', 'they', 'will', 'would', 'could', 'should', 'about', 'there', 'their', 'which'];
   return clean.length > 8 && !common.includes(clean);
 }
 
 function getDefinition(word) {
   const clean = word.toLowerCase().replace(/[^a-z]/g, '');
-  return jargonDictionary[clean] || `Complex term meaning "${clean}"`;
+  return jargonCache.get(clean) || `Complex term meaning "${clean}"`;
+}
+
+async function fetchJargonDefinition(word, context = '') {
+  const clean = word.toLowerCase().replace(/[^a-z]/g, '');
+  if (!clean) return 'No definition available.';
+  if (jargonCache.has(clean)) return jargonCache.get(clean);
+  if (jargonPending.has(clean)) return jargonPending.get(clean);
+
+  const requestPromise = new Promise((resolve) => {
+    safeSendMessage({ action: 'defineJargon', word: clean, context }, (response, error) => {
+      if (error || !response?.success) {
+        const detail = response?.error || error?.message || 'Unknown error';
+        resolve(`Error: ${detail}`);
+        return;
+      }
+      resolve(response.definition || `Complex term meaning "${clean}"`);
+    });
+  }).then((definition) => {
+    jargonCache.set(clean, definition);
+    jargonPending.delete(clean);
+    return definition;
+  });
+
+  jargonPending.set(clean, requestPromise);
+  return requestPromise;
 }
 
 function initJargonExplainer() {
   setTimeout(() => {
     const mainContent = findMainContent();
     if (!mainContent) return;
-    
+
     const walker = document.createTreeWalker(mainContent, NodeFilter.SHOW_TEXT, {
       acceptNode: (node) => {
         if (node.parentElement?.classList?.contains('neuro-jargon-word')) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     });
-    
+
     const textNodes = [];
     while (walker.nextNode()) textNodes.push(walker.currentNode);
-    
+
     textNodes.forEach(node => {
       const words = node.textContent.split(/(\s+)/);
       for (let i = 0; i < words.length; i++) {
         const word = words[i];
         if (word?.trim() && isJargonWord(word.trim())) {
           const cleanWord = word.trim().replace(/[^a-z]/gi, '');
-          const definition = getDefinition(cleanWord);
           const span = document.createElement('span');
           span.className = 'neuro-jargon-word';
           span.textContent = word;
           span.style.borderBottom = '2px dotted #6c5ce7';
           span.style.cursor = 'help';
-          span.addEventListener('mouseenter', (e) => {
+          span.addEventListener('mouseenter', async (e) => {
             const rect = span.getBoundingClientRect();
-            showJargonTooltip(cleanWord, definition, rect.left, rect.top);
+            showJargonTooltip(cleanWord, 'Looking up meaning…', rect.left, rect.top);
             // Safe message send
             safeSendMessage({ action: 'trackJargonHover' });
+            const sentence = span.parentElement?.innerText?.slice(0, 220) || '';
+            const definition = await fetchJargonDefinition(cleanWord, sentence);
+            updateJargonTooltip(cleanWord, definition, rect.left, rect.top);
           });
           words[i] = span;
         }
@@ -661,13 +1963,177 @@ function initJargonExplainer() {
 function showJargonTooltip(word, definition, x, y) {
   const existing = document.getElementById('neuro-jargon-tooltip');
   if (existing) existing.remove();
-  
+
   const tooltip = document.createElement('div');
   tooltip.id = 'neuro-jargon-tooltip';
   tooltip.innerHTML = `<strong style="color:#6c5ce7;">📖 ${word}</strong><br>${definition}`;
-  tooltip.style.cssText = `position:fixed; left:${x+10}px; top:${y-10}px; z-index:1000001; background:#1a1a2e; color:#eee; border-radius:12px; padding:12px 16px; max-width:280px; box-shadow:0 8px 24px rgba(0,0,0,0.3); border-left:4px solid #6c5ce7; font-family:system-ui,sans-serif; font-size:13px; animation:fadeIn 0.2s ease;`;
+  tooltip.style.cssText = `position:fixed; left:${x + 10}px; top:${y - 10}px; z-index:1000001; background:#1a1a2e; color:#eee; border-radius:12px; padding:12px 16px; max-width:280px; box-shadow:0 8px 24px rgba(0,0,0,0.3); border-left:4px solid #6c5ce7; font-family:system-ui,sans-serif; font-size:13px; animation:fadeIn 0.2s ease;`;
   document.body.appendChild(tooltip);
   setTimeout(() => tooltip.remove(), 4000);
+}
+
+function updateJargonTooltip(word, definition, x, y) {
+  const tooltip = document.getElementById('neuro-jargon-tooltip');
+  if (!tooltip) {
+    showJargonTooltip(word, definition, x, y);
+    return;
+  }
+  tooltip.innerHTML = `<strong style="color:#6c5ce7;">📖 ${word}</strong><br>${definition}`;
+}
+
+// ========== 8.5 TONE DECODER ==========
+
+const toneCache = new Map();
+const tonePending = new Map();
+let toneDecoderEnabled = false;
+let toneHoverTimer = null;
+let lastToneTarget = null;
+
+function initToneDecoder() {
+  if (toneDecoderEnabled) return;
+  toneDecoderEnabled = true;
+  document.addEventListener('mouseup', handleToneSelection);
+  document.addEventListener('mouseover', handleToneHover, true);
+}
+
+function removeToneDecoder() {
+  toneDecoderEnabled = false;
+  if (toneHoverTimer) clearTimeout(toneHoverTimer);
+  document.removeEventListener('mouseup', handleToneSelection);
+  document.removeEventListener('mouseover', handleToneHover, true);
+  removeToneTooltip();
+}
+
+function handleToneSelection() {
+  if (!toneDecoderEnabled) return;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed) return;
+  const text = selection.toString().trim();
+  if (text.length < 6) return;
+  if (!selection.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+  if (!rect || (rect.width === 0 && rect.height === 0)) return;
+
+  const context = getToneContextFromNode(range.commonAncestorContainer);
+  showToneTooltip('Analyzing…', 'Checking tone', rect.left, rect.top);
+
+  requestToneAnalysis(text, context).then(result => {
+    updateToneTooltip(result.tone, result.explanation, rect.left, rect.top);
+  });
+}
+
+function handleToneHover(event) {
+  if (!toneDecoderEnabled) return;
+  const target = event.target;
+  if (!target || target.closest('#neuro-tone-tooltip')) return;
+  if (isEditableTarget(target)) return;
+
+  const block = findToneBlock(target);
+  if (!block) return;
+  if (block === lastToneTarget) return;
+  lastToneTarget = block;
+
+  if (toneHoverTimer) clearTimeout(toneHoverTimer);
+  toneHoverTimer = setTimeout(() => {
+    const text = getToneBlockText(block);
+    if (!text) return;
+    const rect = block.getBoundingClientRect();
+    if (!rect) return;
+    const context = text.slice(0, 220);
+
+    showToneTooltip('Analyzing…', 'Checking tone', rect.left, rect.top);
+    requestToneAnalysis(text, context).then(result => {
+      updateToneTooltip(result.tone, result.explanation, rect.left, rect.top);
+    });
+  }, 650);
+}
+
+function isEditableTarget(element) {
+  if (!element) return false;
+  if (element.isContentEditable) return true;
+  return /input|textarea|select/i.test(element.tagName || '');
+}
+
+function findToneBlock(element) {
+  const block = element.closest('p, li, blockquote, article, section, div');
+  if (!block) return null;
+  const text = (block.innerText || '').trim();
+  if (text.length < 30) return null;
+  if (/nav|menu|footer|header|aside|comment|sidebar/i.test(block.className || '')) return null;
+  return block;
+}
+
+function getToneBlockText(element) {
+  const text = (element.innerText || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  if (text.length < 30) return null;
+  return text.length > 420 ? text.slice(0, 420) : text;
+}
+
+function getToneContextFromNode(node) {
+  const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  if (!element) return '';
+  const block = findToneBlock(element);
+  return block ? (getToneBlockText(block) || '') : '';
+}
+
+function requestToneAnalysis(text, context = '') {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean) return Promise.resolve({ tone: 'literal', explanation: 'No text available.' });
+  const cacheKey = clean.toLowerCase().slice(0, 240);
+  if (toneCache.has(cacheKey)) return Promise.resolve(toneCache.get(cacheKey));
+  if (tonePending.has(cacheKey)) return tonePending.get(cacheKey);
+
+  const requestPromise = new Promise((resolve) => {
+    safeSendMessage(
+      { action: 'analyzeTone', text: clean.slice(0, 800), context: context.slice(0, 400) },
+      (response, error) => {
+        if (error || !response?.success) {
+          resolve({ tone: 'literal', explanation: 'Unable to analyze tone right now.' });
+          return;
+        }
+        resolve({
+          tone: response.tone || 'literal',
+          explanation: response.explanation || 'Neutral phrasing suggests a literal tone.'
+        });
+      }
+    );
+  }).then((result) => {
+    toneCache.set(cacheKey, result);
+    tonePending.delete(cacheKey);
+    return result;
+  });
+
+  tonePending.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+function showToneTooltip(tone, explanation, x, y) {
+  const existing = document.getElementById('neuro-tone-tooltip');
+  if (existing) existing.remove();
+
+  const tooltip = document.createElement('div');
+  tooltip.id = 'neuro-tone-tooltip';
+  tooltip.innerHTML = `<strong style="color:#a29bfe;">🗣️ Tone: ${tone}</strong><div style="margin-top:4px; color:#dfe6ff;">${explanation}</div>`;
+  tooltip.style.cssText = `position:fixed; left:${x + 10}px; top:${Math.max(y - 12, 10)}px; z-index:1000001; background:rgba(24, 24, 36, 0.95); color:#eef; border-radius:10px; padding:10px 12px; max-width:260px; box-shadow:0 6px 18px rgba(0,0,0,0.25); border-left:3px solid #a29bfe; font-family:system-ui,sans-serif; font-size:12.5px; animation:fadeIn 0.2s ease;`;
+  document.body.appendChild(tooltip);
+  setTimeout(() => tooltip.remove(), 3800);
+}
+
+function updateToneTooltip(tone, explanation, x, y) {
+  const tooltip = document.getElementById('neuro-tone-tooltip');
+  if (!tooltip) {
+    showToneTooltip(tone, explanation, x, y);
+    return;
+  }
+  tooltip.innerHTML = `<strong style="color:#a29bfe;">🗣️ Tone: ${tone}</strong><div style="margin-top:4px; color:#dfe6ff;">${explanation}</div>`;
+  tooltip.style.left = `${x + 10}px`;
+  tooltip.style.top = `${Math.max(y - 12, 10)}px`;
+}
+
+function removeToneTooltip() {
+  document.getElementById('neuro-tone-tooltip')?.remove();
 }
 
 // ========== 9. USER CORRECTION MODE ==========
@@ -686,13 +2152,13 @@ function correctionClickListener(e) {
   if (target.hasAttribute('data-neuro-simplified')) {
     const original = target.getAttribute('data-neuro-original') || target.innerText;
     const current = target.innerText;
-    
+
     const correction = prompt('Edit the simplified text (or keep as is):', current);
     if (correction && correction !== current) {
       target.innerText = correction;
       target.style.backgroundColor = 'rgba(0, 184, 148, 0.1)';
       target.style.borderLeftColor = '#00b894';
-      
+
       const domain = window.location.hostname;
       // Safe message send
       safeSendMessage({
@@ -701,7 +2167,7 @@ function correctionClickListener(e) {
         correction: correction,
         domain: domain
       });
-      
+
       showNotification('✓ Correction saved! AI will learn from this.', 'success');
     }
   }
@@ -710,7 +2176,7 @@ function correctionClickListener(e) {
 function addCorrectionExitButton() {
   const existing = document.getElementById('correction-exit');
   if (existing) existing.remove();
-  
+
   const exitBtn = document.createElement('button');
   exitBtn.id = 'correction-exit';
   exitBtn.innerHTML = '✓ Exit Correction Mode';
@@ -740,6 +2206,14 @@ function addFocusIndicators() {
 }
 
 addFocusIndicators();
+
+window.addEventListener('load', () => {
+  if (currentSettings.removeDistractions) {
+    setTimeout(() => {
+      analyzePageStructure();
+    }, 400);
+  }
+});
 
 // ========== ANIMATION STYLES ==========
 
@@ -949,6 +2423,226 @@ if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', createAIAssistant);
 } else {
   createAIAssistant();
+}
+
+// ===== REMOVE EMOJIS =====
+let emojiObserver = null;
+
+function removeEmojis() {
+  const emojiRegex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+  textNodes.forEach(node => {
+    if (node.textContent && emojiRegex.test(node.textContent)) {
+      node.textContent = node.textContent.replace(emojiRegex, '');
+    }
+  });
+}
+
+function startEmojiObserver() {
+  if (emojiObserver) emojiObserver.disconnect();
+  emojiObserver = new MutationObserver(() => removeEmojis());
+  emojiObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopEmojiObserver() {
+  if (emojiObserver) {
+    emojiObserver.disconnect();
+    emojiObserver = null;
+  }
+}
+
+// ===== COLLAPSE SIDEBARS =====
+function collapseSidebars() {
+  const sidebarSelectors = [
+    'aside', '.sidebar', '[class*="sidebar"]', '[id*="sidebar"]',
+    '.right-rail', '.left-rail', '.side-panel', '[class*="side-bar"]',
+    '.menu-sidebar', '.navigation-sidebar', '.widget-area'
+  ];
+
+  sidebarSelectors.forEach(selector => {
+    try {
+      document.querySelectorAll(selector).forEach(el => {
+        if (!el.hasAttribute('data-sidebar-collapsed')) {
+          const toggleBtn = document.createElement('button');
+          toggleBtn.innerHTML = '☰';
+          toggleBtn.style.cssText = `
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            width: 28px;
+            height: 28px;
+            background: #6c5ce7;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            z-index: 10000;
+            font-size: 14px;
+          `;
+          toggleBtn.onclick = (e) => {
+            e.stopPropagation();
+            const isCollapsed = el.style.width === '0px' || el.style.display === 'none';
+            if (isCollapsed) {
+              el.style.width = '';
+              el.style.display = '';
+              el.style.minWidth = '';
+              toggleBtn.innerHTML = '☰';
+            } else {
+              el.style.width = '0px';
+              el.style.display = 'none';
+              el.style.minWidth = '0px';
+              toggleBtn.innerHTML = '☷';
+            }
+          };
+          el.style.position = 'relative';
+          el.appendChild(toggleBtn);
+          el.setAttribute('data-sidebar-collapsed', 'true');
+        }
+      });
+    } catch (e) { }
+  });
+}
+
+// ===== FOCUS CIRCLE =====
+let focusCircleElement = null;
+let currentFocusColor = null;
+
+function createFocusCircle(color) {
+  if (focusCircleElement) focusCircleElement.remove();
+
+  focusCircleElement = document.createElement('div');
+  focusCircleElement.id = 'neuro-focus-circle';
+  focusCircleElement.style.cssText = `
+    position: fixed;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 3px solid ${color};
+    background: rgba(${hexToRgb(color)}, 0.1);
+    pointer-events: none;
+    z-index: 999999;
+    transition: all 0.05s ease;
+    box-shadow: 0 0 10px ${color};
+    left: -20px;
+    top: -20px;
+  `;
+  document.body.appendChild(focusCircleElement);
+
+  document.addEventListener('mousemove', (e) => {
+    if (focusCircleElement) {
+      focusCircleElement.style.left = (e.clientX - 20) + 'px';
+      focusCircleElement.style.top = (e.clientY - 20) + 'px';
+    }
+  });
+}
+
+function hexToRgb(hex) {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}` : '108, 92, 231';
+}
+
+function removeFocusCircle() {
+  if (focusCircleElement) {
+    focusCircleElement.remove();
+    focusCircleElement = null;
+  }
+}
+
+// ===== BACKGROUND PATTERN =====
+let patternStyle = null;
+
+function applyBackgroundPattern(pattern) {
+  if (patternStyle) patternStyle.remove();
+
+  if (pattern === 'none') return;
+
+  patternStyle = document.createElement('style');
+  patternStyle.id = 'neuro-bg-pattern';
+
+  const patterns = {
+    dots: `radial-gradient(circle at 2px 2px, rgba(108,92,231,0.1) 1px, transparent 1px)`,
+    lines: `repeating-linear-gradient(45deg, rgba(108,92,231,0.05) 0px, rgba(108,92,231,0.05) 2px, transparent 2px, transparent 8px)`,
+    grid: `repeating-linear-gradient(0deg, rgba(108,92,231,0.08) 0px, rgba(108,92,231,0.08) 1px, transparent 1px, transparent 20px), repeating-linear-gradient(90deg, rgba(108,92,231,0.08) 0px, rgba(108,92,231,0.08) 1px, transparent 1px, transparent 20px)`
+  };
+
+  if (patterns[pattern]) {
+    patternStyle.textContent = `body { background-image: ${patterns[pattern]}; background-size: 20px 20px; }`;
+    document.head.appendChild(patternStyle);
+  }
+}
+
+// ===== CUSTOM BACKGROUND COLOR =====
+let bgColorStyle = null;
+
+function applyCustomBackgroundColor(color) {
+  if (bgColorStyle) bgColorStyle.remove();
+
+  bgColorStyle = document.createElement('style');
+  bgColorStyle.id = 'neuro-bg-color';
+  bgColorStyle.textContent = `body, .main-content, article, main { background-color: ${color} !important; }`;
+  document.head.appendChild(bgColorStyle);
+}
+
+// ===== ZOOM LEVEL =====
+function applyZoomLevel(zoom) {
+  document.body.style.zoom = `${zoom}%`;
+}
+
+// ===== MESSAGE HANDLERS FOR NEW FEATURES =====
+// Add these to your existing chrome.runtime.onMessage.addListener
+
+// Inside the message listener, add:
+if (request.action === 'updateFocusCircle') {
+  if (request.color === 'off') {
+    removeFocusCircle();
+  } else {
+    createFocusCircle(request.color);
+  }
+  sendResponse({ success: true });
+}
+
+if (request.action === 'updateBackgroundColor') {
+  applyCustomBackgroundColor(request.color);
+  sendResponse({ success: true });
+}
+
+if (request.action === 'updateBackgroundPattern') {
+  applyBackgroundPattern(request.pattern);
+  sendResponse({ success: true });
+}
+
+// Add to applyAllModifications():
+if (currentSettings.removeEmojis) {
+  removeEmojis();
+  startEmojiObserver();
+} else {
+  stopEmojiObserver();
+}
+
+if (currentSettings.collapseSidebars) {
+  collapseSidebars();
+}
+
+if (currentSettings.focusCircleColor && currentSettings.focusCircleColor !== 'off') {
+  createFocusCircle(currentSettings.focusCircleColor);
+} else {
+  removeFocusCircle();
+}
+
+if (currentSettings.customBgColor) {
+  applyCustomBackgroundColor(currentSettings.customBgColor);
+}
+
+if (currentSettings.bgPattern && currentSettings.bgPattern !== 'none') {
+  applyBackgroundPattern(currentSettings.bgPattern);
+}
+
+if (currentSettings.zoomLevel) {
+  applyZoomLevel(currentSettings.zoomLevel);
 }
 
 // ========== CLEANUP ==========
