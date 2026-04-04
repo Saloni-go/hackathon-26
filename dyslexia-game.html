@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>🧠 Sensory Quest - Neuro-Inclusive Web</title>
+  <title>📖 Dyslexia Quest - Neuro-Inclusive Web</title>
   <style>
     * {
       margin: 0;
@@ -11,7 +11,7 @@
     }
     
     body {
-      width: 800px;
+      width: 900px;
       min-height: 700px;
       font-family: 'Segoe UI', system-ui, sans-serif;
       background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
@@ -94,138 +94,213 @@
       border: 1px solid rgba(108,92,231,0.2);
     }
     
-    .sound-game {
+    /* Game 1: Left vs Right Challenge */
+    .direction-game {
       text-align: center;
     }
     
-    .sound-wave {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 8px;
-      height: 100px;
-      margin: 20px 0;
-    }
-    
-    .sound-bar {
-      width: 8px;
-      height: 30px;
-      background: #6c5ce7;
-      border-radius: 4px;
-      transition: height 0.1s ease;
-    }
-    
-    .sound-bar.active {
-      background: #a55ce7;
-      box-shadow: 0 0 10px #a55ce7;
-    }
-    
-    .sound-button {
-      width: 120px;
-      height: 120px;
-      background: linear-gradient(135deg, #6c5ce7, #a55ce7);
-      border: none;
-      border-radius: 60px;
+    .direction-prompt {
       font-size: 48px;
-      cursor: pointer;
-      margin: 20px auto;
-      transition: all 0.1s;
-      box-shadow: 0 8px 24px rgba(108,92,231,0.4);
-    }
-    
-    .sound-button:active {
-      transform: scale(0.95);
-    }
-    
-    .emotion-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 15px;
-      margin: 20px 0;
-    }
-    
-    .emotion-card {
-      background: rgba(255,255,255,0.08);
-      border-radius: 16px;
-      padding: 15px;
-      text-align: center;
-      cursor: pointer;
-      transition: all 0.2s;
-      border: 2px solid transparent;
-    }
-    
-    .emotion-card:hover {
+      margin: 20px;
+      padding: 30px;
       background: rgba(108,92,231,0.2);
-      transform: translateY(-3px);
-    }
-    
-    .emotion-emoji { font-size: 48px; display: block; margin-bottom: 8px; }
-    .emotion-name { font-size: 12px; color: #ccc; }
-    
-    .story-box {
-      background: linear-gradient(135deg, #1a1a2e, #16213e);
       border-radius: 20px;
-      padding: 20px;
-      margin: 20px 0;
-      border-left: 4px solid #6c5ce7;
     }
     
-    .story-text {
-      font-size: 15px;
-      line-height: 1.6;
-      margin-bottom: 20px;
-    }
-    
-    .story-question {
-      font-size: 14px;
-      font-weight: 600;
-      color: #6c5ce7;
-      margin-bottom: 15px;
-    }
-    
-    .story-options {
+    .direction-buttons {
       display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
+      gap: 20px;
+      justify-content: center;
+      margin: 20px 0;
     }
     
-    .story-option {
+    .direction-btn {
+      padding: 15px 30px;
+      font-size: 24px;
       background: #2d2d44;
       border: none;
-      padding: 10px 16px;
-      border-radius: 30px;
+      border-radius: 16px;
       color: white;
       cursor: pointer;
       transition: all 0.2s;
     }
     
-    .story-option:hover {
+    .direction-btn:hover {
       background: #6c5ce7;
+      transform: scale(1.05);
     }
     
-    .pattern-grid {
+    /* Game 2: Map Reading Challenge */
+    .map-game {
+      text-align: center;
+    }
+    
+    .simple-map {
+      background: #2d2d44;
+      border-radius: 20px;
+      padding: 20px;
+      margin: 20px 0;
+      position: relative;
+      min-height: 300px;
+    }
+    
+    .map-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 15px;
-      margin: 20px 0;
+      gap: 10px;
+      margin: 20px;
     }
     
-    .pattern-card {
-      background: #2d2d44;
-      border-radius: 16px;
+    .map-cell {
+      background: #1a1a2e;
       padding: 20px;
+      border-radius: 12px;
       text-align: center;
       cursor: pointer;
       transition: all 0.2s;
     }
     
-    .pattern-card:hover {
+    .map-cell:hover {
+      background: #6c5ce7;
       transform: scale(1.02);
-      background: #3d3d5c;
     }
     
-    .pattern-symbols { font-size: 32px; letter-spacing: 8px; }
+    .map-cell.correct {
+      background: #00b894;
+      animation: pulse 0.5s;
+    }
     
+    .map-cell.wrong {
+      background: #e74c3c;
+      animation: shake 0.3s;
+    }
+    
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+      100% { transform: scale(1); }
+    }
+    
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-5px); }
+      75% { transform: translateX(5px); }
+    }
+    
+    /* Game 3: Reading Speed Challenge */
+    .reading-game {
+      text-align: center;
+    }
+    
+    .reading-text {
+      background: #1a1a2e;
+      padding: 20px;
+      border-radius: 16px;
+      font-size: 18px;
+      line-height: 1.6;
+      margin: 20px 0;
+      text-align: left;
+    }
+    
+    .reading-timer {
+      font-size: 32px;
+      font-family: monospace;
+      color: #6c5ce7;
+      margin: 10px;
+    }
+    
+    /* Game 4: Letter Confusion (b/d/p/q) */
+    .letter-game {
+      text-align: center;
+    }
+    
+    .letter-display {
+      font-size: 80px;
+      margin: 20px;
+      padding: 30px;
+      background: rgba(108,92,231,0.2);
+      border-radius: 20px;
+      font-weight: bold;
+    }
+    
+    .letter-options {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    
+    .letter-btn {
+      width: 100px;
+      height: 100px;
+      font-size: 48px;
+      background: #2d2d44;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .letter-btn:hover {
+      background: #6c5ce7;
+      transform: scale(1.05);
+    }
+    
+    /* Game 5: Memory Challenge */
+    .memory-game {
+      text-align: center;
+    }
+    
+    .memory-sequence {
+      display: flex;
+      gap: 15px;
+      justify-content: center;
+      margin: 20px;
+    }
+    
+    .memory-item {
+      width: 80px;
+      height: 80px;
+      background: #6c5ce7;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      animation: fadeIn 0.3s;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.8); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    
+    /* Game 6: Mental Math Challenge */
+    .math-game {
+      text-align: center;
+    }
+    
+    .math-question {
+      font-size: 36px;
+      margin: 20px;
+      padding: 30px;
+      background: rgba(108,92,231,0.2);
+      border-radius: 20px;
+    }
+    
+    .math-input {
+      font-size: 24px;
+      padding: 12px;
+      text-align: center;
+      background: #2d2d44;
+      border: none;
+      border-radius: 12px;
+      color: white;
+      width: 200px;
+      margin: 10px;
+    }
+    
+    /* Response Buttons */
     .response-buttons {
       display: flex;
       gap: 12px;
@@ -264,6 +339,7 @@
       cursor: pointer;
       margin-top: 20px;
       transition: all 0.2s;
+      display: none;
     }
     
     .next-btn:hover {
@@ -306,9 +382,6 @@
       gap: 12px;
     }
     
-    .rec-icon { font-size: 20px; }
-    .rec-text { font-size: 13px; }
-    
     .timer {
       position: fixed;
       bottom: 20px;
@@ -320,21 +393,23 @@
       font-family: monospace;
     }
     
-    .hidden { display: none; }
+    .feedback {
+      margin-top: 10px;
+      font-size: 14px;
+      min-height: 50px;
+    }
   </style>
 </head>
 <body>
   <div class="game-container">
-    <div class="score-badge" id="scoreDisplay">🎮 Score: 0/5</div>
+    <div class="score-badge" id="scoreDisplay">📖 Score: 0/10</div>
     <div class="progress-container">
       <div class="progress-fill" id="progressFill"></div>
     </div>
+    <div style="font-size: 11px; color: #888; text-align: center; margin-bottom: 10px;">Camera access is used only for the first direction challenge.</div>
     <div id="gameContent"></div>
     <div class="timer" id="timer">⏱️ 0s</div>
   </div>
-  <template id="soundNextTemplate">
-    <button class="next-btn" id="soundNextBtn" style="display: none;">Next →</button>
-  </template>
-  <script src="autism-game.js"></script>
+  <script src="dyslexia-game.js"></script>
 </body>
 </html>

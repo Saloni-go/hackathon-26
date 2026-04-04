@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>🧠 Sensory Quest - Neuro-Inclusive Web</title>
+  <title>⚡ ADHD Focus Quest - Neuro-Inclusive Web</title>
   <style>
     * {
       margin: 0;
@@ -11,7 +11,7 @@
     }
     
     body {
-      width: 800px;
+      width: 900px;
       min-height: 700px;
       font-family: 'Segoe UI', system-ui, sans-serif;
       background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
@@ -94,137 +94,228 @@
       border: 1px solid rgba(108,92,231,0.2);
     }
     
-    .sound-game {
+    /* Game 1: Focus & Completion Challenge */
+    .focus-game {
       text-align: center;
     }
     
-    .sound-wave {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 8px;
-      height: 100px;
+    .task-progress {
+      background: #2d2d44;
+      border-radius: 10px;
+      height: 20px;
       margin: 20px 0;
+      overflow: hidden;
     }
     
-    .sound-bar {
-      width: 8px;
-      height: 30px;
-      background: #6c5ce7;
-      border-radius: 4px;
-      transition: height 0.1s ease;
+    .task-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #6c5ce7, #a55ce7);
+      width: 0%;
+      transition: width 0.3s;
     }
     
-    .sound-bar.active {
-      background: #a55ce7;
-      box-shadow: 0 0 10px #a55ce7;
-    }
-    
-    .sound-button {
-      width: 120px;
-      height: 120px;
-      background: linear-gradient(135deg, #6c5ce7, #a55ce7);
-      border: none;
-      border-radius: 60px;
-      font-size: 48px;
-      cursor: pointer;
-      margin: 20px auto;
-      transition: all 0.1s;
-      box-shadow: 0 8px 24px rgba(108,92,231,0.4);
-    }
-    
-    .sound-button:active {
-      transform: scale(0.95);
-    }
-    
-    .emotion-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
+    .task-steps {
+      display: flex;
+      flex-direction: column;
       gap: 15px;
       margin: 20px 0;
     }
     
-    .emotion-card {
-      background: rgba(255,255,255,0.08);
-      border-radius: 16px;
+    .task-step {
+      background: #1a1a2e;
       padding: 15px;
-      text-align: center;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      gap: 15px;
       cursor: pointer;
       transition: all 0.2s;
-      border: 2px solid transparent;
     }
     
-    .emotion-card:hover {
-      background: rgba(108,92,231,0.2);
-      transform: translateY(-3px);
-    }
-    
-    .emotion-emoji { font-size: 48px; display: block; margin-bottom: 8px; }
-    .emotion-name { font-size: 12px; color: #ccc; }
-    
-    .story-box {
-      background: linear-gradient(135deg, #1a1a2e, #16213e);
-      border-radius: 20px;
-      padding: 20px;
-      margin: 20px 0;
-      border-left: 4px solid #6c5ce7;
-    }
-    
-    .story-text {
-      font-size: 15px;
-      line-height: 1.6;
-      margin-bottom: 20px;
-    }
-    
-    .story-question {
-      font-size: 14px;
-      font-weight: 600;
-      color: #6c5ce7;
-      margin-bottom: 15px;
-    }
-    
-    .story-options {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    
-    .story-option {
+    .task-step:hover {
       background: #2d2d44;
+      transform: translateX(5px);
+    }
+    
+    .task-step.completed {
+      background: #00b894;
+      opacity: 0.7;
+    }
+    
+    .task-check {
+      width: 30px;
+      height: 30px;
+      border-radius: 15px;
+      background: #2d2d44;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .task-step.completed .task-check {
+      background: #fff;
+      color: #00b894;
+    }
+    
+    /* Game 2: Organization Challenge */
+    .org-game {
+      text-align: center;
+    }
+    
+    .sort-items {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 20px 0;
+    }
+    
+    .sort-item {
+      background: #2d2d44;
+      padding: 15px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      min-width: 80px;
+    }
+    
+    .sort-item:hover {
+      background: #6c5ce7;
+      transform: scale(1.05);
+    }
+    
+    .sort-item.placed {
+      background: #00b894;
+      cursor: default;
+    }
+    
+    .sort-zones {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      margin: 20px 0;
+    }
+    
+    .sort-zone {
+      background: #1a1a2e;
+      padding: 20px;
+      border-radius: 16px;
+      min-width: 150px;
+      border: 2px dashed #6c5ce7;
+    }
+    
+    /* Game 3: Memory & Appointments */
+    .memory-game {
+      text-align: center;
+    }
+    
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 5px;
+      margin: 20px 0;
+    }
+    
+    .calendar-day {
+      background: #2d2d44;
+      padding: 10px;
+      border-radius: 8px;
+      text-align: center;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    
+    .calendar-day.remembered {
+      background: #00b894;
+    }
+    
+    /* Game 4: Task Avoidance Test */
+    .procrastination-game {
+      text-align: center;
+    }
+    
+    .timer-display {
+      font-size: 48px;
+      font-family: monospace;
+      color: #6c5ce7;
+      margin: 20px;
+    }
+    
+    .distraction-buttons {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin: 20px 0;
+    }
+    
+    .distraction-btn {
+      background: #e74c3c;
       border: none;
-      padding: 10px 16px;
-      border-radius: 30px;
+      padding: 10px 20px;
+      border-radius: 20px;
       color: white;
       cursor: pointer;
-      transition: all 0.2s;
+      animation: pulse 1s infinite;
     }
     
-    .story-option:hover {
-      background: #6c5ce7;
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
     }
     
-    .pattern-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 15px;
-      margin: 20px 0;
-    }
-    
-    .pattern-card {
-      background: #2d2d44;
-      border-radius: 16px;
-      padding: 20px;
+    /* Game 5: Fidget Tracking */
+    .fidget-game {
       text-align: center;
+    }
+    
+    .fidget-area {
+      background: #1a1a2e;
+      border-radius: 20px;
+      padding: 30px;
+      margin: 20px 0;
+      min-height: 300px;
+      cursor: crosshair;
+      position: relative;
+    }
+    
+    .fidget-tracker {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #6c5ce7;
+      border-radius: 5px;
+      pointer-events: none;
+      transition: all 0.05s;
+    }
+    
+    .mouse-trail {
+      position: fixed;
+      pointer-events: none;
+      z-index: 1000;
+    }
+    
+    /* Game 6: Hyperactivity Test */
+    .hyper-game {
+      text-align: center;
+    }
+    
+    .reaction-test {
+      background: #2d2d44;
+      border-radius: 20px;
+      padding: 40px;
+      margin: 20px 0;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.1s;
     }
     
-    .pattern-card:hover {
-      transform: scale(1.02);
-      background: #3d3d5c;
+    .reaction-test.active {
+      background: #00b894;
     }
     
-    .pattern-symbols { font-size: 32px; letter-spacing: 8px; }
+    .reaction-test.waiting {
+      background: #e74c3c;
+    }
     
     .response-buttons {
       display: flex;
@@ -264,6 +355,7 @@
       cursor: pointer;
       margin-top: 20px;
       transition: all 0.2s;
+      display: none;
     }
     
     .next-btn:hover {
@@ -306,9 +398,6 @@
       gap: 12px;
     }
     
-    .rec-icon { font-size: 20px; }
-    .rec-text { font-size: 13px; }
-    
     .timer {
       position: fixed;
       bottom: 20px;
@@ -320,21 +409,22 @@
       font-family: monospace;
     }
     
-    .hidden { display: none; }
+    .feedback {
+      margin-top: 10px;
+      font-size: 14px;
+      min-height: 50px;
+    }
   </style>
 </head>
 <body>
   <div class="game-container">
-    <div class="score-badge" id="scoreDisplay">🎮 Score: 0/5</div>
+    <div class="score-badge" id="scoreDisplay">⚡ Score: 0/6</div>
     <div class="progress-container">
       <div class="progress-fill" id="progressFill"></div>
     </div>
     <div id="gameContent"></div>
     <div class="timer" id="timer">⏱️ 0s</div>
   </div>
-  <template id="soundNextTemplate">
-    <button class="next-btn" id="soundNextBtn" style="display: none;">Next →</button>
-  </template>
-  <script src="autism-game.js"></script>
+  <script src="adhd-game.js"></script>
 </body>
 </html>

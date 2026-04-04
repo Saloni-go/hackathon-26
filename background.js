@@ -93,8 +93,14 @@ function initializeAnalytics() {
 
 // ========== AI TEXT SIMPLIFICATION ==========
 
-const HF_API_TOKEN = '';
-const HF_API_URL = 'https://api-inference.huggingface.co/models/facebook/bart-large-cnn';
+try {
+  importScripts('config.js');
+} catch (e) {
+  console.warn('Config not loaded. Run build:config to generate config.js.');
+}
+
+const HF_API_TOKEN = self.__ENV?.HF_API_TOKEN || '';
+const HF_API_URL = self.__ENV?.HF_API_URL || 'https://api-inference.huggingface.co/models/facebook/bart-large-cnn';
 
 async function simplifyTextWithAI(text, retryCount = 0) {
   const textHash = simpleHash(text);

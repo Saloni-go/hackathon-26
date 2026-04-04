@@ -3,7 +3,7 @@
   "name": "Neuro-Inclusive Web",
   "version": "2.0.0",
   "description": "AI-powered cognitive accessibility for ADHD, Autism, and Dyslexia",
-  "permissions": ["storage", "activeTab", "scripting", "alarms"],
+  "permissions": ["storage", "activeTab", "scripting", "alarms", "camera"],
   "host_permissions": ["<all_urls>", "https://api-inference.huggingface.co/*"],
   "background": {
     "service_worker": "background.js"
@@ -55,14 +55,16 @@
     }
   ],
   "web_accessible_resources": [
-    {
-      "resources": ["autism-game.html"],
-      "matches": ["<all_urls>"]
-    }
-  ],
+  {
+    "resources": ["autism-game.html", "autism-game.js", "dyslexia-game.html", "dyslexia-game.js", "adhd-game.html", "adhd-game.js"],
+    "matches": ["<all_urls>"]
+  }
+],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   }
 }
+
+

@@ -9,11 +9,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const mainPanel = document.getElementById('mainPanel');
   const startBtn = document.getElementById('startBtn');
   const skipBtn = document.getElementById('skipBtn');
+  const playAutismGameBtn = document.getElementById('playAutismGameBtn');
+  const playDyslexiaGameBtn = document.getElementById('playDyslexiaGameBtn');
+  const playADHDGameBtn = document.getElementById('playADHDGameBtn');
+  const openRecommendedBtn = document.getElementById('openRecommendedBtn');
   const saveBtn = document.getElementById('saveBtn');
   const resetBtn = document.getElementById('resetBtn');
   const backBtn = document.getElementById('backBtn');
   const onboardStatus = document.getElementById('onboardStatus');
   const mainStatus = document.getElementById('mainStatus');
+  const recommendationSummary = document.getElementById('recommendationSummary');
+  const recommendationList = document.getElementById('recommendationList');
   
   // Sliders
   const adhdSlider = document.getElementById('adhdSlider');
@@ -46,16 +52,121 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     console.log('Status:', msg);
   }
+
+  function openAssessmentGame(gameFile, label) {
+    const gameUrl = chrome.runtime.getURL(gameFile);
+    chrome.tabs.create({ url: gameUrl }, () => {
+      if (chrome.runtime.lastError) {
+        showStatus(`Couldn't open ${label} game`);
+        console.log(`Failed to open ${label} game:`, chrome.runtime.lastError.message);
+      } else {
+        showStatus(`Opening ${label} game...`);
+      }
+    });
+  }
+
+  const assessmentDefinitions = {
+    autism: { label: 'Autism', emoji: '🎨', gameFile: 'autism-game.html', color: '#6c5ce7' },
+    dyslexia: { label: 'Dyslexia', emoji: '📖', gameFile: 'dyslexia-game.html', color: '#00b894' },
+    adhd: { label: 'ADHD', emoji: '⚡', gameFile: 'adhd-game.html', color: '#fdcb6e' }
+  };
+
+  function getCurrentProfile() {
+    return {
+      adhd: parseInt(adhdSlider ? adhdSlider.value : 0, 10) || 0,
+      dyslexia: parseInt(dyslexiaSlider ? dyslexiaSlider.value : 0, 10) || 0,
+      autism: parseInt(autismSlider ? autismSlider.value : 0, 10) || 0
+    };
+  }
+
+  function buildQuestionnaireRecommendations(profile) {
+    const recommendations = [
+      { key: 'autism', score: profile.autism },
+      { key: 'adhd', score: profile.adhd },
+      { key: 'dyslexia', score: profile.dyslexia }
+    ].map((item) => ({
+      ...assessmentDefinitions[item.key],
+      key: item.key,
+      score: item.score,
+      strength: item.score >= 70 ? 'Strong match' : item.score >= 40 ? 'Moderate match' : 'Light match'
+    })).sort((a, b) => b.score - a.score);
+
+    const activeRecommendations = recommendations.filter(item => item.score >= 25);
+    return activeRecommendations.length > 0 ? activeRecommendations : recommendations.slice(0, 1);
+  }
+
+  function renderRecommendations(profile) {
+    if (!recommendationSummary || !recommendationList) return [];
+
+    const recommendations = buildQuestionnaireRecommendations(profile);
+    recommendationSummary.textContent = `Recommended order: ${recommendations.map(item => item.label).join(' → ')}`;
+    recommendationList.innerHTML = recommendations.map(item => `
+      <div style="display:flex; align-items:center; justify-content:space-between; background: rgba(15,15,26,0.9); padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.05);">
+        <div style="display:flex; align-items:center; gap: 10px;">
+          <span style="font-size: 18px;">${item.emoji}</span>
+          <div>
+            <div style="font-size: 13px; font-weight: 600; color: #fff;">${item.label}</div>
+            <div style="font-size: 11px; color: #aaa;">${item.strength}</div>
+          </div>
+        </div>
+        <div style="font-size: 12px; font-weight: 700; color: ${item.color};">${item.score}%</div>
+      </div>
+    `).join('');
+
+    if (openRecommendedBtn) {
+      openRecommendedBtn.disabled = false;
+      openRecommendedBtn.textContent = `Open ${recommendations[0].label} Questionnaire`;
+      openRecommendedBtn.dataset.gameFile = recommendations[0].gameFile;
+      openRecommendedBtn.dataset.label = recommendations[0].label;
+    }
+
+    return recommendations;
+  }
+
+  function refreshRecommendations() {
+    return renderRecommendations(getCurrentProfile());
+  }
+
+  if (playAutismGameBtn) {
+    playAutismGameBtn.onclick = () => openAssessmentGame('autism-game.html', 'Autism');
+  }
+
+  if (playDyslexiaGameBtn) {
+    playDyslexiaGameBtn.onclick = () => openAssessmentGame('dyslexia-game.html', 'Dyslexia');
+  }
+
+  if (playADHDGameBtn) {
+    playADHDGameBtn.onclick = () => openAssessmentGame('adhd-game.html', 'ADHD');
+  }
+
+  if (openRecommendedBtn) {
+    openRecommendedBtn.onclick = () => {
+      const gameFile = openRecommendedBtn.dataset.gameFile;
+      const label = openRecommendedBtn.dataset.label || 'Recommended';
+      if (gameFile) {
+        openAssessmentGame(gameFile, label);
+      }
+    };
+  }
   
   // Update slider displays
   if (adhdSlider && adhdValue) {
-    adhdSlider.addEventListener('input', () => { adhdValue.textContent = adhdSlider.value; });
+    adhdSlider.addEventListener('input', () => {
+      adhdValue.textContent = adhdSlider.value;
+      refreshRecommendations();
+    });
   }
   if (dyslexiaSlider && dyslexiaValue) {
-    dyslexiaSlider.addEventListener('input', () => { dyslexiaValue.textContent = dyslexiaSlider.value; });
+    dyslexiaSlider.addEventListener('input', () => {
+      dyslexiaValue.textContent = dyslexiaSlider.value;
+      refreshRecommendations();
+    });
   }
   if (autismSlider && autismValue) {
-    autismSlider.addEventListener('input', () => { autismValue.textContent = autismSlider.value; });
+    autismSlider.addEventListener('input', () => {
+      autismValue.textContent = autismSlider.value;
+      refreshRecommendations();
+    });
   }
   
   // Calculate settings from profile
@@ -123,16 +234,16 @@ document.addEventListener('DOMContentLoaded', () => {
       console.log('🔥 START BUTTON CLICKED!');
       showStatus('Saving your preferences...');
       
-      const adhd = adhdSlider ? adhdSlider.value : 50;
-      const dyslexia = dyslexiaSlider ? dyslexiaSlider.value : 50;
-      const autism = autismSlider ? autismSlider.value : 50;
+      const profile = getCurrentProfile();
+      const recommendations = buildQuestionnaireRecommendations(profile);
       
-      const settings = calculateSettingsFromProfile({ adhd, dyslexia, autism });
+      const settings = calculateSettingsFromProfile(profile);
       console.log('Calculated settings:', settings);
       
       chrome.storage.local.set({
         onboardingCompleted: true,
-        userProfile: { adhd, dyslexia, autism },
+        userProfile: profile,
+        recommendedQuestionnaires: recommendations,
         ...settings
       }, () => {
         console.log('Settings saved to storage');
@@ -153,6 +264,10 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Apply to tab (won't crash even if fails)
         applySettingsToTab(settings);
+
+        if (recommendations.length > 0) {
+          showStatus(`Recommended questionnaire: ${recommendations[0].label}`, true);
+        }
       });
     };
   }
@@ -240,6 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       if (onboardingPanel) onboardingPanel.classList.remove('hidden');
       if (mainPanel) mainPanel.classList.add('hidden');
+      refreshRecommendations();
     }
   });
 });

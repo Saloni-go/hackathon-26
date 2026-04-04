@@ -117,13 +117,33 @@
   </style>
 </head>
 <body>
-  <!-- ONBOARDING PANEL -->
+   <!-- ONBOARDING PANEL -->
   <div id="onboardingPanel">
     <div class="header">
       <div class="icon">🧠</div>
       <h2>Welcome to Neuro-Inclusive Web</h2>
     </div>
     <div class="subtitle">Let's personalize your browsing experience</div>
+    
+    <!-- Quick Assessment Section -->
+    <div style="background: rgba(108,92,231,0.1); border-radius: 16px; padding: 15px; margin-bottom: 20px;">
+      <div style="text-align: center; margin-bottom: 12px; font-size: 14px; font-weight: 600;">🎮 Take an Interactive Assessment</div>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+        <button id="playAutismGameBtn" style="flex: 1; background: #6c5ce7; margin: 0;">🎨 Autism</button>
+        <button id="playDyslexiaGameBtn" style="flex: 1; background: #00b894; margin: 0;">📖 Dyslexia</button>
+        <button id="playADHDGameBtn" style="flex: 1; background: #fdcb6e; margin: 0; color: #1a1a2e;">⚡ ADHD</button>
+      </div>
+      <div style="font-size: 10px; color: #888; text-align: center; margin-top: 10px;">✨ Fun games that analyze your responses</div>
+    </div>
+
+    <div style="background: rgba(0, 184, 148, 0.08); border-radius: 16px; padding: 15px; margin-bottom: 20px;">
+      <div style="text-align: center; margin-bottom: 8px; font-size: 14px; font-weight: 600;">📋 Recommended Questionnaires</div>
+      <div id="recommendationSummary" style="font-size: 12px; color: #c8c8d8; text-align: center; margin-bottom: 10px;">Adjust the sliders to rank your questionnaires.</div>
+      <div id="recommendationList" style="display: grid; gap: 8px;"></div>
+      <button id="openRecommendedBtn" class="btn-secondary" style="margin-top: 12px;">Open Recommended Questionnaire</button>
+    </div>
+    
+    <div style="text-align: center; margin: 10px 0; color: #888; font-size: 12px;">— OR adjust manually —</div>
     
     <div class="slider-group">
       <div class="slider-header">
