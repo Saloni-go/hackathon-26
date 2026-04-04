@@ -1,12 +1,42 @@
 {
   "manifest_version": 3,
   "name": "Neuro-Inclusive Web",
-  "version": "1.0.0",
-  "description": "Make any webpage accessible for ADHD, Autism, and Dyslexia - cognitive accessibility as a core metric",
-  "permissions": ["storage", "activeTab", "scripting"],
-  "host_permissions": ["<all_urls>"],
+  "version": "2.0.0",
+  "description": "AI-powered cognitive accessibility for ADHD, Autism, and Dyslexia",
+  "permissions": ["storage", "activeTab", "scripting", "alarms"],
+  "host_permissions": ["<all_urls>", "https://api-inference.huggingface.co/*"],
   "background": {
     "service_worker": "background.js"
+  },
+  "commands": {
+    "toggle-dyslexic-font": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+D",
+        "mac": "Command+Shift+D"
+      },
+      "description": "Toggle Dyslexia-Friendly Font"
+    },
+    "toggle-soft-colors": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+C",
+        "mac": "Command+Shift+C"
+      },
+      "description": "Toggle Soft Colors"
+    },
+    "toggle-remove-distractions": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+H",
+        "mac": "Command+Shift+H"
+      },
+      "description": "Toggle Remove Distractions"
+    },
+    "toggle-reading-ruler": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+R",
+        "mac": "Command+Shift+R"
+      },
+      "description": "Toggle Reading Ruler"
+    }
   },
   "action": {
     "default_popup": "popup.html",
@@ -21,13 +51,12 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "css": [],
       "run_at": "document_end"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["utils.js"],
+      "resources": ["autism-game.html"],
       "matches": ["<all_urls>"]
     }
   ],

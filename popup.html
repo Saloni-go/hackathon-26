@@ -2,94 +2,209 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <link rel="stylesheet" href="popup.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      width: 380px;
+      min-height: 500px;
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      padding: 20px;
+    }
+    button {
+      background: #6c5ce7;
+      color: white;
+      border: none;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 10px;
+      transition: all 0.2s;
+    }
+    button:hover {
+      background: #5b4bc4;
+      transform: translateY(-1px);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    .btn-secondary {
+      background: #2d2d44;
+    }
+    .btn-secondary:hover {
+      background: #3d3d5c;
+    }
+    input[type="range"] {
+      width: 100%;
+      margin: 10px 0;
+      height: 6px;
+      border-radius: 3px;
+      background: #2d2d44;
+      -webkit-appearance: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #6c5ce7;
+      cursor: pointer;
+    }
+    input[type="checkbox"] {
+      margin-right: 10px;
+      transform: scale(1.2);
+    }
+    .slider-group {
+      background: #0f0f1a;
+      padding: 15px;
+      border-radius: 12px;
+      margin-bottom: 15px;
+    }
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .slider-value {
+      color: #6c5ce7;
+      font-weight: bold;
+    }
+    .hidden {
+      display: none;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .icon {
+      font-size: 40px;
+    }
+    h2 {
+      font-size: 18px;
+      margin-top: 5px;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #888;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .setting-item {
+      background: #0f0f1a;
+      padding: 12px;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .status {
+      text-align: center;
+      font-size: 12px;
+      color: #6c5ce7;
+      margin-top: 15px;
+      padding-top: 10px;
+      border-top: 1px solid #2d2d44;
+    }
+  </style>
 </head>
 <body>
-  <div class="container">
+  <!-- ONBOARDING PANEL -->
+  <div id="onboardingPanel">
     <div class="header">
-      <span class="icon">🧠</span>
-      <h2>Neuro-Inclusive Web</h2>
+      <div class="icon">🧠</div>
+      <h2>Welcome to Neuro-Inclusive Web</h2>
+    </div>
+    <div class="subtitle">Let's personalize your browsing experience</div>
+    
+    <div class="slider-group">
+      <div class="slider-header">
+        <span>⚡ ADHD</span>
+        <span class="slider-value" id="adhdValue">50</span>
+      </div>
+      <input type="range" id="adhdSlider" min="0" max="100" value="50">
+      <div style="font-size: 11px; color: #888;">Easily distracted, difficulty focusing</div>
     </div>
     
-    <div class="subtitle">Make any website accessible</div>
-    
-    <div class="settings-group">
-      <div class="setting-item">
-        <label class="toggle-switch">
-          <input type="checkbox" id="dyslexicFont">
-          <span class="slider"></span>
-        </label>
-        <div class="setting-info">
-          <div class="setting-name">Dyslexia-Friendly Font</div>
-          <div class="setting-desc">OpenDyslexic font with increased spacing</div>
-        </div>
+    <div class="slider-group">
+      <div class="slider-header">
+        <span>📖 Dyslexia</span>
+        <span class="slider-value" id="dyslexiaValue">50</span>
       </div>
-      
-      <div class="setting-item">
-        <label class="toggle-switch">
-          <input type="checkbox" id="softColors">
-          <span class="slider"></span>
-        </label>
-        <div class="setting-info">
-          <div class="setting-name">Soft Colors</div>
-          <div class="setting-desc">Reduce sensory load with calm colors</div>
-        </div>
-      </div>
-      
-      <div class="setting-item">
-        <label class="toggle-switch">
-          <input type="checkbox" id="removeDistractions">
-          <span class="slider"></span>
-        </label>
-        <div class="setting-info">
-          <div class="setting-name">Remove Distractions</div>
-          <div class="setting-desc">Hide ads, sidebars, popups, and recommendations</div>
-        </div>
-      </div>
-      
-      <div class="setting-item">
-        <label class="toggle-switch">
-          <input type="checkbox" id="readingRuler">
-          <span class="slider"></span>
-        </label>
-        <div class="setting-info">
-          <div class="setting-name">Reading Ruler</div>
-          <div class="setting-desc">Highlight one line at a time for focus</div>
-        </div>
-      </div>
-      
-      <div class="setting-item">
-        <label class="toggle-switch">
-          <input type="checkbox" id="removeAnimations">
-          <span class="slider"></span>
-        </label>
-        <div class="setting-info">
-          <div class="setting-name">Stop Animations & GIFs</div>
-          <div class="setting-desc">Prevent motion-triggered distractions</div>
-        </div>
-      </div>
-      
-      <div class="setting-item">
-        <label class="toggle-switch">
-          <input type="checkbox" id="simplifyText">
-          <span class="slider"></span>
-        </label>
-        <div class="setting-info">
-          <div class="setting-name">AI Text Simplification</div>
-          <div class="setting-desc">Rewrite complex sentences (AI required)</div>
-        </div>
-      </div>
+      <input type="range" id="dyslexiaSlider" min="0" max="100" value="50">
+      <div style="font-size: 11px; color: #888;">Difficulty reading, letter confusion</div>
     </div>
     
-    <div class="button-group">
-      <button id="saveBtn" class="btn-primary">💾 Save Settings</button>
-      <button id="resetBtn" class="btn-secondary">↺ Reset</button>
+    <div class="slider-group">
+      <div class="slider-header">
+        <span>🎨 Autism / Sensory</span>
+        <span class="slider-value" id="autismValue">50</span>
+      </div>
+      <input type="range" id="autismSlider" min="0" max="100" value="50">
+      <div style="font-size: 11px; color: #888;">Sensory overload, need for predictability</div>
     </div>
     
-    <div class="footer">
-      <span id="statusMsg"></span>
-    </div>
+    <button id="startBtn">✨ Start Browsing</button>
+    <button id="skipBtn" class="btn-secondary">Skip to Manual Settings</button>
+    <div id="onboardStatus" class="status"></div>
   </div>
+
+  <!-- MAIN SETTINGS PANEL -->
+  <div id="mainPanel" class="hidden">
+    <div class="header">
+      <div class="icon">⚙️</div>
+      <h2>Accessibility Settings</h2>
+    </div>
+    
+    <div class="setting-item">
+      <input type="checkbox" id="dyslexicFont">
+      <label>📖 Dyslexia-Friendly Font</label>
+    </div>
+    
+    <div class="setting-item">
+      <input type="checkbox" id="softColors">
+      <label>🎨 Soft Colors (Reduce sensory load)</label>
+    </div>
+    
+    <div class="setting-item">
+      <input type="checkbox" id="removeDistractions">
+      <label>🚫 Remove Distractions (Ads, popups)</label>
+    </div>
+    
+    <div class="setting-item">
+      <input type="checkbox" id="readingRuler">
+      <label>📏 Reading Ruler (Focus line by line)</label>
+    </div>
+    
+    <div class="setting-item">
+      <input type="checkbox" id="removeAnimations">
+      <label>⏸️ Stop Animations & GIFs</label>
+    </div>
+    
+    <div class="setting-item">
+      <input type="checkbox" id="simplifyText">
+      <label>🤖 AI Text Simplification</label>
+    </div>
+    
+    <div class="setting-item">
+      <input type="checkbox" id="jargonExplainer">
+      <label>📚 Jargon Explainer (Hover for definitions)</label>
+    </div>
+    
+    <button id="saveBtn">💾 Save Settings</button>
+    <button id="resetBtn" class="btn-secondary">↺ Reset to Defaults</button>
+    <button id="backBtn" class="btn-secondary">← Back to Assessment</button>
+    <div id="mainStatus" class="status"></div>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>
