@@ -33,10 +33,53 @@ function safeSendToAllTabs(message) {
 const aiCache = new Map();
 const CACHE_MAX_SIZE = 100;
 const JARGON_CACHE_MAX_SIZE = 200;
-const jargonCache = new Map();
 const TONE_CACHE_MAX_SIZE = 200;
 const toneCache = new Map();
 const ANALYTICS_KEY = 'neuro_analytics';
+
+// ========== LRU CACHE (REUSABLE) ==========
+// Small, dependency-free LRU cache with safe string keys.
+class LRUCache {
+  constructor(maxSize = 100) {
+    this.maxSize = Math.max(1, maxSize);
+    this.map = new Map();
+  }
+
+  normalizeKey(key) {
+    const safe = String(key ?? '').trim();
+    return safe.length > 200 ? safe.slice(0, 200) : safe;
+  }
+
+  get(key) {
+    const safeKey = this.normalizeKey(key);
+    if (!this.map.has(safeKey)) return undefined;
+    const value = this.map.get(safeKey);
+    this.map.delete(safeKey);
+    this.map.set(safeKey, value);
+    return value;
+  }
+
+  set(key, value) {
+    const safeKey = this.normalizeKey(key);
+    if (this.map.has(safeKey)) this.map.delete(safeKey);
+    this.map.set(safeKey, value);
+    if (this.map.size > this.maxSize) {
+      const oldestKey = this.map.keys().next().value;
+      this.map.delete(oldestKey);
+    }
+  }
+
+  has(key) {
+    return this.map.has(this.normalizeKey(key));
+  }
+
+  clear() {
+    this.map.clear();
+  }
+}
+
+// Example usage: cache jargon explanations in-memory with LRU eviction.
+const jargonCache = new LRUCache(JARGON_CACHE_MAX_SIZE);
 
 // ========== KNOWLEDGE MANAGER ==========
 const KNOWLEDGE_KEYS = {
@@ -490,12 +533,10 @@ function chooseModelForTask(taskType, payload = {}) {
   const isLong = totalLength > 500;
 
   if (taskType === 'jargon_definition') {
-    if (isShort) {
-      return { provider: 'local', model: 'heuristic-v1', reason: 'short jargon definition request' };
+    if (hasGemini) {
+      return { provider: 'gemini', model: GEMINI_MODEL, reason: 'prefer gemini for jargon definitions' };
     }
-    return hasGemini
-      ? { provider: 'gemini', model: GEMINI_MODEL, reason: 'longer jargon needs nuance' }
-      : { provider: 'local', model: 'heuristic-v1', reason: 'cloud unavailable' };
+    return { provider: 'local', model: 'heuristic-v1', reason: 'cloud unavailable' };
   }
 
   if (taskType === 'tone_detection') {
@@ -508,15 +549,13 @@ function chooseModelForTask(taskType, payload = {}) {
   }
 
   if (taskType === 'simplify_text') {
-    if (isLong && hasGemini) {
-      return { provider: 'gemini', model: GEMINI_MODEL, reason: 'long text simplification' };
+    if (hasGemini) {
+      return { provider: 'gemini', model: GEMINI_MODEL, reason: 'prefer gemini for full-detail simplification' };
     }
     if (hasHf) {
-      return { provider: 'huggingface', model: HF_API_URL, reason: 'fast summarization model' };
+      return { provider: 'huggingface', model: HF_API_URL, reason: 'fallback summarization model' };
     }
-    return hasGemini
-      ? { provider: 'gemini', model: GEMINI_MODEL, reason: 'fallback to cloud' }
-      : { provider: 'local', model: 'heuristic-v1', reason: 'no model available' };
+    return { provider: 'local', model: 'heuristic-v1', reason: 'no model available' };
   }
 
   return hasGemini
@@ -542,8 +581,25 @@ async function simplifyTextWithHuggingFace(text) {
   return data[0]?.summary_text || text;
 }
 
+// Replace the existing simplifyTextWithGemini function
 async function simplifyTextWithGemini(text) {
   const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  
+ const prompt = `You are a cognitive accessibility rewriter. 
+TASK: Split the following paragraph into a detailed list of simple bullet points.
+
+RULES:
+1. DO NOT SUMMARIZE. Keep all the facts and details.
+2. Break long sentences into multiple shorter bullets.
+3. Use plain, direct language.
+4. Output ONLY the bullets, one per line, starting with "•".
+5. Do not include any introductory text.
+
+Text to process:
+${text}`;
+
+
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -552,9 +608,14 @@ async function simplifyTextWithGemini(text) {
     body: JSON.stringify({
       contents: [
         {
-          parts: [{ text: `Simplify this text for easier reading while keeping meaning.\n\n${text}` }]
+          parts: [{ text: prompt }]
         }
-      ]
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 900,
+        topP: 0.9
+      }
     })
   });
 
@@ -562,6 +623,71 @@ async function simplifyTextWithGemini(text) {
   const data = await response.json();
   const candidate = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
   return candidate || text;
+}
+
+// Replace the existing mockSimplify function with aggressive local simplification
+function mockSimplify(text) {
+  if (!text || text.length < 50) return text;
+
+  const replacements = {
+    'utilize': 'use',
+    'implement': 'use',
+    'additional': 'more',
+    'purchase': 'buy',
+    'numerous': 'many',
+    'facilitate': 'help',
+    'terminate': 'end',
+    'demonstrate': 'show',
+    'consequently': 'so',
+    'nevertheless': 'but',
+    'furthermore': 'also',
+    'approximately': 'about',
+    'significant': 'big',
+    'substantial': 'large',
+    'however': 'but',
+    'therefore': 'so',
+    'moreover': 'also',
+    'subsequent': 'next',
+    'prior to': 'before',
+    'in order to': 'to',
+    'due to the fact that': 'because',
+    'for the purpose of': 'for',
+    'with the exception of': 'except',
+    'in the event that': 'if',
+    'on the other hand': 'but',
+    'as a result': 'so',
+    'in addition': 'also',
+    'first and foremost': 'first',
+    'last but not least': 'finally',
+    'at this point in time': 'now',
+    'in the near future': 'soon',
+    'a large number of': 'many',
+    'a small number of': 'few',
+    'the majority of': 'most',
+    'a variety of': 'many',
+    'in the process of': 'currently',
+    'has the ability to': 'can',
+    'is able to': 'can',
+    'is required to': 'must',
+    'it is possible that': 'maybe',
+    'it is important to': 'remember to',
+    'worth mentioning': 'note'
+  };
+
+  const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+  if (!sentences.length) return text;
+
+  const simplifiedSentences = sentences.map((sentence) => {
+    let simplified = sentence;
+    for (const [complex, simple] of Object.entries(replacements)) {
+      const regex = new RegExp(`\\b${complex}\\b`, 'gi');
+      simplified = simplified.replace(regex, simple);
+    }
+    simplified = simplified.replace(/\b(was|were|been|being)\s+(\w+ed)\b/gi, '$2');
+    return simplified.trim();
+  }).filter(Boolean);
+
+  return simplifiedSentences.map(sentence => `• ${sentence}`).join('\n');
 }
 
 async function analyzeDomWithGemini(html) {
@@ -595,12 +721,15 @@ async function analyzeDomWithGemini(html) {
 async function defineJargonWithGemini(word, context) {
   const cacheKey = `${word}`.toLowerCase();
   const storedDefinition = await KnowledgeManager.getJargonDefinition(cacheKey);
-  if (storedDefinition) return storedDefinition;
+  const isPlaceholder = storedDefinition && storedDefinition.startsWith('Complex term meaning');
+  if (storedDefinition && (!GEMINI_API_KEY || !isPlaceholder)) return storedDefinition;
   const ragHit = await retrieveSimilarExplanation('jargon', word);
-  if (ragHit?.result?.definition) return ragHit.result.definition;
+  if (ragHit?.result?.definition && (!GEMINI_API_KEY || !ragHit.result.definition.startsWith('Complex term meaning'))) {
+    return ragHit.result.definition;
+  }
   const selection = chooseModelForTask('jargon_definition', { word, context });
   if (selection.provider === 'local' || !GEMINI_API_KEY) {
-    return `Complex term meaning "${word}"`;
+    throw new Error('Gemini unavailable for jargon definition');
   }
   if (jargonCache.has(cacheKey)) {
     return jargonCache.get(cacheKey);
@@ -614,7 +743,7 @@ async function defineJargonWithGemini(word, context) {
     ]
   };
 
-  let definition = `Complex term meaning "${word}"`;
+  let definition = '';
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -626,14 +755,13 @@ async function defineJargonWithGemini(word, context) {
     const data = await response.json();
     const text = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
     definition = text.trim() || definition;
+    if (!definition || definition.length < 5) {
+      throw new Error('Empty definition from Gemini');
+    }
   } catch (error) {
-    definition = `Complex term meaning "${word}"`;
+    throw new Error(error?.message || 'Gemini jargon lookup failed');
   }
 
-  if (jargonCache.size >= JARGON_CACHE_MAX_SIZE) {
-    const firstKey = jargonCache.keys().next().value;
-    jargonCache.delete(firstKey);
-  }
   jargonCache.set(cacheKey, definition);
   KnowledgeManager.setJargonDefinition(cacheKey, definition);
   saveExplanationHistory('jargon', word, { definition });
@@ -755,45 +883,17 @@ async function simplifyTextWithAI(text, retryCount = 0) {
     return aiCache.get(textHash);
   }
   
-  if (!GEMINI_API_KEY && !HF_API_TOKEN) {
+  if (!GEMINI_API_KEY) {
     const mockResult = mockSimplify(text);
     cacheResult(textHash, mockResult);
     return mockResult;
   }
   
   try {
-    const selection = chooseModelForTask('simplify_text', { text });
-    if (selection.provider === 'gemini' && GEMINI_API_KEY) {
-      const simplified = await simplifyTextWithGemini(text);
-      cacheResult(textHash, simplified);
-      trackPageSimplification();
-      return simplified;
-    }
-
-    if (selection.provider === 'huggingface' && HF_API_TOKEN) {
-      const simplified = await simplifyTextWithHuggingFace(text);
-      cacheResult(textHash, simplified);
-      trackPageSimplification();
-      return simplified;
-    }
-
-    if (GEMINI_API_KEY) {
-      const simplified = await simplifyTextWithGemini(text);
-      cacheResult(textHash, simplified);
-      trackPageSimplification();
-      return simplified;
-    }
-
-    if (HF_API_TOKEN) {
-      const simplified = await simplifyTextWithHuggingFace(text);
-      cacheResult(textHash, simplified);
-      trackPageSimplification();
-      return simplified;
-    }
-
-    const mockResult = mockSimplify(text);
-    cacheResult(textHash, mockResult);
-    return mockResult;
+    const simplified = await simplifyTextWithGemini(text);
+    cacheResult(textHash, simplified);
+    trackPageSimplification();
+    return simplified;
   } catch (error) {
     console.error('AI API error:', error);
     if (retryCount < 2) {
@@ -806,29 +906,6 @@ async function simplifyTextWithAI(text, retryCount = 0) {
   }
 }
 
-function mockSimplify(text) {
-  let simplified = text;
-  
-  const simplifications = {
-    'utilize': 'use', 'implement': 'use', 'additional': 'more',
-    'purchase': 'buy', 'numerous': 'many', 'facilitate': 'help',
-    'terminate': 'end', 'demonstrate': 'show', 'consequently': 'so',
-    'nevertheless': 'but', 'furthermore': 'also', 'approximately': 'about',
-    'significant': 'big', 'substantial': 'large', 'however': 'but',
-    'therefore': 'so', 'moreover': 'also'
-  };
-  
-  for (const [complex, simple] of Object.entries(simplifications)) {
-    const regex = new RegExp(`\\b${complex}\\b`, 'gi');
-    simplified = simplified.replace(regex, simple);
-  }
-  
-  simplified = simplified.replace(/([.!?])\s+/g, '$1\n\n');
-  
-  if (simplified.length > 2000) simplified = simplified.substring(0, 2000) + '...';
-  
-  return simplified;
-}
 
 function simpleHash(str) {
   let hash = 0;
@@ -923,7 +1000,7 @@ chrome.commands.onCommand.addListener((command) => {
 let ragStore = {
   cache: new Map(),
   add: function(original, simplified, domain) {
-    const key = original.substring(0, 100);
+    const key = simpleHash(String(original || ''));
     this.cache.set(key, { simplified, domain, votes: 0, timestamp: Date.now() });
     if (this.cache.size > 200) {
       const oldest = [...this.cache.entries()].sort((a,b) => a[1].timestamp - b[1].timestamp)[0];
@@ -932,11 +1009,11 @@ let ragStore = {
     this.saveToStorage();
   },
   find: function(query, domain) {
-    for (const [key, value] of this.cache) {
-      if (query.toLowerCase().includes(key.toLowerCase()) && value.domain === domain) {
-        value.votes++;
-        return value.simplified;
-      }
+    const key = simpleHash(String(query || ''));
+    const entry = this.cache.get(key);
+    if (entry && entry.domain === domain) {
+      entry.votes++;
+      return entry.simplified;
     }
     return null;
   },
@@ -997,6 +1074,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'defineJargon') {
+    if (!GEMINI_API_KEY) {
+      sendResponse({ success: false, error: 'Missing GEMINI_API_KEY' });
+      return true;
+    }
     defineJargonWithGemini(request.word, request.context)
       .then(definition => sendResponse({ success: true, definition }))
       .catch(error => sendResponse({ success: false, error: error.message }));

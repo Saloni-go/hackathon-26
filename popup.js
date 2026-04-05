@@ -258,30 +258,48 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
   
-  // Apply settings to current tab (safe version - won't crash)
-  function applySettingsToTab(settings) {
-    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-      if (tabs && tabs.length > 0 && tabs[0].id && tabs[0].url && !tabs[0].url.startsWith('chrome://')) {
-        try {
-          chrome.tabs.sendMessage(tabs[0].id, {
+ function applySettingsToTab(settings) {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs && tabs.length > 0 && tabs[0].id && tabs[0].url && !tabs[0].url.startsWith('chrome://')) {
+      try {
+        chrome.tabs.sendMessage(
+          tabs[0].id,
+          {
             action: 'settingsUpdated',
             settings: settings
-          }, (response) => {
+          },
+          (response) => {
             if (chrome.runtime.lastError) {
-              // This is fine - content script not loaded yet
               console.log('Content script not ready, settings saved for next page load');
-            } else {
-              console.log('Settings applied to current tab');
+              return;
             }
-          });
-        } catch(e) {
-          console.log('Could not send to tab:', e.message);
-        }
-      } else {
-        console.log('No active web page to apply settings');
+
+            console.log('Settings applied to current tab');
+
+            // Explicitly trigger AI simplification every time it is enabled
+            if (settings.simplifyText) {
+              chrome.tabs.sendMessage(
+                tabs[0].id,
+                { action: 'simplifyPageWithAI' },
+                (simplifyResponse) => {
+                  if (chrome.runtime.lastError) {
+                    console.log('Could not trigger simplify action:', chrome.runtime.lastError.message);
+                  } else {
+                    console.log('Simplify action triggered');
+                  }
+                }
+              );
+            }
+          }
+        );
+      } catch (e) {
+        console.log('Could not send to tab:', e.message);
       }
-    });
-  }
+    } else {
+      console.log('No active web page to apply settings');
+    }
+  });
+}
   
   // Load settings into checkboxes
   function loadSettingsIntoUI() {
@@ -304,6 +322,9 @@ document.addEventListener('DOMContentLoaded', () => {
       console.log('UI loaded with settings:', result);
     });
   }
+
+  window.applySettingsToTab = applySettingsToTab;
+  window.showStatus = showStatus;
 
   if (themeModeSelect) {
     themeModeSelect.addEventListener('change', () => {
@@ -489,6 +510,11 @@ const zoomInBtn = document.getElementById('zoomIn');
 const zoomOutBtn = document.getElementById('zoomOut');
 const zoomResetBtn = document.getElementById('zoomReset');
 const zoomLevelSpan = document.getElementById('zoomLevel');
+const saveBtnExtra = document.getElementById('saveBtn');
+const themeModeSelectExtra = document.getElementById('themeMode');
+const themePaletteSelectExtra = document.getElementById('themePalette');
+const showStatusSafe = window.showStatus || ((msg) => console.log(msg));
+const applySettingsSafe = window.applySettingsToTab || (() => {});
 
 let currentZoom = 100;
 let currentFocusCircle = 'off';
@@ -701,28 +727,30 @@ function applyBgPatternToTab(pattern) {
 }
 
 // Update the save button to include new settings
-const originalSaveHandler = saveBtn?.onclick;
-if (saveBtn) {
-  saveBtn.onclick = () => {
+const originalSaveHandler = saveBtnExtra?.onclick;
+if (saveBtnExtra) {
+  saveBtnExtra.onclick = () => {
     const settings = {
-      dyslexicFont: dyslexicFontChk ? dyslexicFontChk.checked : false,
-      softColors: softColorsChk ? softColorsChk.checked : false,
-      removeDistractions: removeDistractionsChk ? removeDistractionsChk.checked : false,
-      readingRuler: readingRulerChk ? readingRulerChk.checked : false,
-      removeAnimations: removeAnimationsChk ? removeAnimationsChk.checked : false,
-      simplifyText: simplifyTextChk ? simplifyTextChk.checked : false,
-      jargonExplainer: jargonExplainerChk ? jargonExplainerChk.checked : false,
+      dyslexicFont: document.getElementById('dyslexicFont')?.checked || false,
+      softColors: document.getElementById('softColors')?.checked || false,
+      removeDistractions: document.getElementById('removeDistractions')?.checked || false,
+      readingRuler: document.getElementById('readingRuler')?.checked || false,
+      removeAnimations: document.getElementById('removeAnimations')?.checked || false,
+      simplifyText: document.getElementById('simplifyText')?.checked || false,
+      jargonExplainer: document.getElementById('jargonExplainer')?.checked || false,
       removeEmojis: removeEmojisChk ? removeEmojisChk.checked : false,
       collapseSidebars: collapseSidebarsChk ? collapseSidebarsChk.checked : false,
       focusCircleColor: currentFocusCircle,
       customBgColor: currentBgColor,
       bgPattern: currentBgPattern,
-      zoomLevel: currentZoom
+      zoomLevel: currentZoom,
+      themeMode: themeModeSelectExtra ? (themeModeSelectExtra.value === 'dark' ? 'dark' : 'light') : 'light',
+      themePalette: themePaletteSelectExtra ? themePaletteSelectExtra.value : 'creamSepia'
     };
     
     chrome.storage.local.set(settings, () => {
-      showStatus('✓ All settings saved!', true);
-      applySettingsToTab(settings);
+      showStatusSafe('✓ All settings saved!', true);
+      applySettingsSafe(settings);
     });
   };
 }

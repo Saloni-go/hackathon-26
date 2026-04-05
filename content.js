@@ -21,6 +21,7 @@ let observer = null;
 let animationObserver = null;
 let cognitiveScoreDisplay = null;
 let learnedOverrides = {};
+let layoutStabilizerObserver = null;
 
 const TRACKED_FEATURES = [
   'dyslexicFont',
@@ -32,6 +33,50 @@ const TRACKED_FEATURES = [
   'jargonExplainer',
   'toneDecoder'
 ];
+
+// ========== LRU CACHE (REUSABLE) ==========
+// Small, dependency-free LRU cache with safe string keys.
+class LRUCache {
+  constructor(maxSize = 100) {
+    this.maxSize = Math.max(1, maxSize);
+    this.map = new Map();
+  }
+
+  normalizeKey(key) {
+    const safe = String(key ?? '').trim();
+    return safe.length > 200 ? safe.slice(0, 200) : safe;
+  }
+
+  get(key) {
+    const safeKey = this.normalizeKey(key);
+    if (!this.map.has(safeKey)) return undefined;
+    const value = this.map.get(safeKey);
+    this.map.delete(safeKey);
+    this.map.set(safeKey, value);
+    return value;
+  }
+
+  set(key, value) {
+    const safeKey = this.normalizeKey(key);
+    if (this.map.has(safeKey)) this.map.delete(safeKey);
+    this.map.set(safeKey, value);
+    if (this.map.size > this.maxSize) {
+      const oldestKey = this.map.keys().next().value;
+      this.map.delete(oldestKey);
+    }
+  }
+
+  has(key) {
+    return this.map.has(this.normalizeKey(key));
+  }
+
+  clear() {
+    this.map.clear();
+  }
+}
+
+// Example usage: cache expensive DOM context detection.
+const siteContextCache = new LRUCache(20);
 
 // ========== SAFE MESSAGING UTILITY ==========
 
@@ -49,6 +94,136 @@ function safeSendMessage(message, callback) {
     console.warn('Send message failed:', e);
     if (callback) callback(null, e);
   }
+}
+
+// ========== DEBOUNCE + BATCHED OBSERVER UTILITIES ==========
+// Debouncing helps avoid reacting to every micro-mutation, which keeps pages smooth.
+function debounce(fn, delay = 150) {
+  let timerId = null;
+  return (...args) => {
+    if (timerId) clearTimeout(timerId);
+    timerId = setTimeout(() => fn(...args), delay);
+  };
+}
+
+function extractAddedElementRoots(mutations, maxNodes = 40) {
+  const candidates = [];
+  mutations.forEach((mutation) => {
+    mutation.addedNodes.forEach((node) => {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        candidates.push(node);
+      }
+    });
+  });
+
+  if (candidates.length === 0) return [];
+  const limited = candidates.slice(0, maxNodes);
+
+  // Remove duplicates and subtrees to avoid rescanning the same region.
+  const unique = [];
+  for (const node of limited) {
+    if (unique.some(existing => existing.contains(node))) continue;
+    for (let i = unique.length - 1; i >= 0; i--) {
+      if (node.contains(unique[i])) unique.splice(i, 1);
+    }
+    unique.push(node);
+  }
+
+  return unique;
+}
+
+function createBatchedMutationObserver({
+  delay = 150,
+  maxMutations = 150,
+  maxNodes = 40,
+  onBatch
+}) {
+  let pending = [];
+  const flush = debounce(() => {
+    if (pending.length === 0) return;
+    const mutations = pending.slice(0, maxMutations);
+    pending = [];
+    const roots = extractAddedElementRoots(mutations, maxNodes);
+    if (roots.length === 0) return;
+    onBatch?.({ mutations, roots });
+  }, delay);
+
+  const observer = new MutationObserver((mutations) => {
+    if (!mutations || mutations.length === 0) return;
+    pending.push(...mutations);
+    flush();
+  });
+
+  return {
+    observe(target, options) {
+      observer.observe(target, options);
+    },
+    disconnect() {
+      observer.disconnect();
+      pending = [];
+    }
+  };
+}
+
+// ========== PRIORITY QUEUE (LIGHTWEIGHT) ==========
+// Processes higher-priority items first without external libraries.
+class PriorityQueue {
+  constructor() {
+    this.items = [];
+  }
+
+  enqueue(item, priority = 0) {
+    this.items.push({ item, priority });
+    this.items.sort((a, b) => b.priority - a.priority);
+  }
+
+  dequeue() {
+    return this.items.shift()?.item ?? null;
+  }
+
+  isEmpty() {
+    return this.items.length === 0;
+  }
+
+  clear() {
+    this.items = [];
+  }
+}
+
+function isVisibleElement(element) {
+  if (!element || !(element instanceof HTMLElement)) return false;
+  const style = window.getComputedStyle(element);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function scoreContentElement(element) {
+  if (!element || !(element instanceof HTMLElement)) return -5;
+  const tag = (element.tagName || '').toLowerCase();
+  const text = (element.innerText || '').trim();
+  if (!text) return -5;
+
+  let score = 0;
+  if (isMainContent(element)) score += 6;
+  if (isVisibleElement(element)) score += 4;
+  if (/h1|h2|h3|h4|h5|h6/.test(tag)) score += 4;
+  if (tag === 'p' || tag === 'li') score += 3;
+  if (element.closest('article')) score += 3;
+
+  const classHint = (element.className || '').toLowerCase();
+  const idHint = (element.id || '').toLowerCase();
+  if (/footer|comment|sidebar|aside|nav|menu/.test(classHint + idHint)) score -= 6;
+
+  if (text.length > 40) score += 1;
+  if (text.length > 160) score += 1;
+
+  return score;
+}
+
+function collectCandidateElements(root) {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll('article, section, p, li, h1, h2, h3, h4, h5, h6, aside, footer'));
 }
 
 // ========== INITIALIZATION ==========
@@ -71,6 +246,14 @@ chrome.storage.local.get(
 
     applyAllModifications();
 
+    if (currentSettings.simplifyText) {
+      simplifyPageWithAI();
+    }
+
+    if (!currentSettings.readingRuler) {
+      removeReadingRuler();
+    }
+
     refreshLearnedPreferences();
 
     if (currentSettings.cognitiveScoring) {
@@ -88,6 +271,12 @@ try {
         currentSettings = { ...currentSettings, ...request.settings };
         recordFeatureOverrides(previousSettings, currentSettings);
         applyAllModifications();
+        if (!previousSettings.simplifyText && currentSettings.simplifyText) {
+          simplifyPageWithAI();
+        }
+        if (!currentSettings.readingRuler) {
+          removeReadingRuler();
+        }
         sendResponse({ success: true });
       }
 
@@ -221,6 +410,10 @@ function detectCurrentSiteType() {
 // ========== CONTEXT MONITOR ===========
 
 function detectSiteContext() {
+  const cacheKey = `${window.location.hostname}${window.location.pathname}:${document.body?.innerText?.length || 0}`;
+  const cached = siteContextCache.get(cacheKey);
+  if (cached) return cached;
+
   const signals = [];
   const hostname = window.location.hostname || '';
   const host = hostname.toLowerCase();
@@ -280,12 +473,15 @@ function detectSiteContext() {
   const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
   const [pageType, confidence] = sorted[0];
 
-  return {
+  const context = {
     pageType,
     hostname,
     confidence: Math.min(1, Math.max(0.1, Number(confidence.toFixed(2)))),
     signals
   };
+
+  siteContextCache.set(cacheKey, context);
+  return context;
 }
 
 function inferUserIntent(siteType, settingsFromStorage) {
@@ -786,39 +982,43 @@ function runLayoutStabilizer(summary) {
     stabilizeInitialMedia();
     stabilizeStickyElements();
 
-    let lastObserverRun = 0;
-    const observer = new MutationObserver((mutations) => {
-      const now = Date.now();
-      if (now - lastObserverRun < CONFIG.observerThrottleMs) return;
-      lastObserverRun = now;
+    if (layoutStabilizerObserver) layoutStabilizerObserver.disconnect();
+    layoutStabilizerObserver = createBatchedMutationObserver({
+      delay: CONFIG.observerThrottleMs,
+      maxNodes: CONFIG.maxObservationNodes,
+      onBatch: ({ roots }) => {
+        if (!roots || roots.length === 0) return;
+        roots.forEach((node) => {
+          const rect = node.getBoundingClientRect?.();
+          if (!rect || rect.top > window.innerHeight * CONFIG.aboveFoldMultiplier) return;
 
-      const addedNodes = [];
-      mutations.forEach((mutation) => {
-        mutation.addedNodes.forEach((node) => {
-          if (node.nodeType === Node.ELEMENT_NODE) addedNodes.push(node);
+          const tag = (node.tagName || '').toUpperCase();
+          if (['IMG', 'VIDEO', 'IFRAME', 'EMBED', 'OBJECT'].includes(tag)) {
+            const isEmbed = ['IFRAME', 'EMBED', 'OBJECT'].includes(tag);
+            reserveSpaceForMedia(node, isEmbed ? CONFIG.minEmbedHeight : CONFIG.minMediaHeight);
+          }
+
+          node.querySelectorAll?.('img, video, iframe, embed, object').forEach((media) => {
+            const isEmbed = ['IFRAME', 'EMBED', 'OBJECT'].includes((media.tagName || '').toUpperCase());
+            reserveSpaceForMedia(media, isEmbed ? CONFIG.minEmbedHeight : CONFIG.minMediaHeight);
+          });
         });
-      });
-
-      if (addedNodes.length === 0) return;
-
-      const nodesToScan = addedNodes.slice(0, CONFIG.maxObservationNodes);
-      nodesToScan.forEach((node) => {
-        const rect = node.getBoundingClientRect?.();
-        if (!rect || rect.top > window.innerHeight * CONFIG.aboveFoldMultiplier) return;
-        if (['IMG', 'VIDEO', 'IFRAME', 'EMBED', 'OBJECT'].includes(node.tagName)) {
-          const isEmbed = ['IFRAME', 'EMBED', 'OBJECT'].includes(node.tagName);
-          reserveSpaceForMedia(node, isEmbed ? CONFIG.minEmbedHeight : CONFIG.minMediaHeight);
-        }
-      });
+      }
     });
-
-    observer.observe(document.body, { childList: true, subtree: true });
+    layoutStabilizerObserver.observe(document.body, { childList: true, subtree: true });
     localSummary.enabled.push('layoutStabilizer');
   } catch (error) {
     localSummary.warnings.push(error?.message || 'Layout stabilizer failed');
   }
 
   return localSummary;
+}
+
+function stopLayoutStabilizerObserver() {
+  if (layoutStabilizerObserver) {
+    layoutStabilizerObserver.disconnect();
+    layoutStabilizerObserver = null;
+  }
 }
 
 function runVisualHarmonizer(summary) {
@@ -969,18 +1169,20 @@ function startMotionSilencer() {
   });
 
   if (motionSilencerObserver) motionSilencerObserver.disconnect();
-  motionSilencerObserver = new MutationObserver((mutations) => {
-    mutations.forEach((mutation) => {
-      mutation.addedNodes.forEach((node) => {
+  motionSilencerObserver = createBatchedMutationObserver({
+    delay: 150,
+    maxNodes: 40,
+    onBatch: ({ roots }) => {
+      roots.forEach((node) => {
         if (!(node instanceof HTMLElement)) return;
-        node.querySelectorAll?.('video, audio').forEach(media => {
-          try { media.pause(); } catch (e) {}
-        });
         if (node.tagName === 'VIDEO' || node.tagName === 'AUDIO') {
           try { node.pause(); } catch (e) {}
         }
+        node.querySelectorAll?.('video, audio').forEach(media => {
+          try { media.pause(); } catch (e) {}
+        });
       });
-    });
+    }
   });
   motionSilencerObserver.observe(document.body, { childList: true, subtree: true });
 }
@@ -1521,61 +1723,126 @@ async function analyzePageStructure() {
 
 // ========== 3. REMOVE DISTRACTIONS ==========
 
+// ========== 3. REMOVE DISTRACTIONS ==========
+
 const distractionSelectors = [
-  '[class*="ad"]', '[id*="ad"]', '[class*="advertisement"]', '.ad-wrapper', '.adsbygoogle',
-  '[class*="popup"]', '[id*="popup"]', '[class*="modal"]', '[class*="overlay"]', '.newsletter', '.cookie-notice',
-  'aside', '.sidebar', '[class*="sidebar"]', '.right-rail', '.left-rail',
-  '[class*="related"]', '[class*="recommend"]', '.more-articles', '.you-might-like',
+  '.ad', '.ads', '.advertisement', '.ad-wrapper', '.adsbygoogle',
+  '.popup', '.modal', '.overlay', '.newsletter', '.cookie-notice',
+  'aside', '.sidebar', '.right-rail', '.left-rail',
+  '.related', '.recommend', '.more-articles', '.you-might-like',
   '.social-share', '.share-buttons', '.comments-section', '#comments',
-  '.sticky', '.fixed-header', '.fixed-footer', '[class*="chat"]', '[class*="intercom"]'
+  '.fixed-header', '.fixed-footer', '.intercom'
 ];
 
-function removeDistractions() {
-  distractionSelectors.forEach(selector => {
-    try {
-      document.querySelectorAll(selector).forEach(el => {
-        if (!isMainContent(el)) {
-          el.style.display = 'none';
-          el.setAttribute('data-neuro-hidden', 'true');
-        }
-      });
-    } catch (e) { }
-  });
-  hideHighDistractionElements();
+function getMainContentElement() {
+  const candidates = [
+    'main',
+    'article',
+    '[role="main"]',
+    '#main',
+    '#content',
+    '#app',
+    '#root',
+    '.main',
+    '.content',
+    '.main-content',
+    '.post-content',
+    '.article-content'
+  ];
+
+  for (const selector of candidates) {
+    const el = document.querySelector(selector);
+    if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
+      return el;
+    }
+  }
+
+  // fallback: biggest visible text-heavy container
+  const all = Array.from(document.querySelectorAll('div, section, article, main'));
+  let best = null;
+  let bestScore = -1;
+
+  for (const el of all) {
+    const text = (el.innerText || '').trim().length;
+    const rect = el.getBoundingClientRect();
+    const score = text + rect.width * rect.height * 0.001;
+    if (text > 200 && rect.width > 300 && rect.height > 200 && score > bestScore) {
+      best = el;
+      bestScore = score;
+    }
+  }
+
+  return best;
 }
 
 function isMainContent(element) {
-  const mainSelectors = ['main', 'article', '.main-content', '#main-content', '.post-content', '#content'];
-  for (const selector of mainSelectors) {
-    const mainElement = document.querySelector(selector);
-    if (mainElement && (mainElement === element || mainElement.contains(element))) return true;
+  const mainElement = getMainContentElement();
+  return !!(mainElement && (mainElement === element || mainElement.contains(element)));
+}
+
+function shouldHideElement(el) {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  if (isMainContent(el)) return false;
+
+  const text = (el.innerText || '').trim().length;
+  const rect = el.getBoundingClientRect();
+  const style = window.getComputedStyle(el);
+
+  // never hide huge likely-main containers
+  if (rect.width > window.innerWidth * 0.6 && rect.height > window.innerHeight * 0.5) {
+    return false;
   }
+
+  // never hide body/html/app roots
+  const tag = el.tagName.toLowerCase();
+  if (['html', 'body', 'main', 'article'].includes(tag)) return false;
+  if (el.id === 'app' || el.id === 'root') return false;
+
+  // likely popup / floating clutter
+  const zIndex = parseInt(style.zIndex, 10);
+  if (
+    (style.position === 'fixed' || style.position === 'absolute') &&
+    !Number.isNaN(zIndex) &&
+    zIndex > 1000
+  ) {
+    return true;
+  }
+
+  // likely side clutter
+  if (text < 500 && rect.width < window.innerWidth * 0.35) {
+    return true;
+  }
+
   return false;
+}
+
+function removeDistractions() {
+  const mainElement = getMainContentElement();
+
+  distractionSelectors.forEach(selector => {
+    try {
+      document.querySelectorAll(selector).forEach(el => {
+        if (!mainElement || isMainContent(el)) return;
+        if (!shouldHideElement(el)) return;
+
+        el.style.display = 'none';
+        el.setAttribute('data-neuro-hidden', 'true');
+      });
+    } catch (e) {
+      console.warn('removeDistractions selector failed:', selector, e);
+    }
+  });
+
+  hideHighDistractionElements();
 }
 
 function hideHighDistractionElements() {
   document.querySelectorAll('div, section, aside').forEach(el => {
     if (el.hasAttribute('data-neuro-hidden') || isMainContent(el)) return;
-    const style = window.getComputedStyle(el);
-    const zIndex = parseInt(style.zIndex);
-    if (zIndex > 1000 && (style.position === 'fixed' || style.position === 'absolute')) {
-      el.style.display = 'none';
-      el.setAttribute('data-neuro-hidden', 'true');
-    }
-  });
-}
+    if (!shouldHideElement(el)) return;
 
-function startDistractionObserver() {
-  if (observer) observer.disconnect();
-  observer = new MutationObserver(() => setTimeout(() => removeDistractions(), 100));
-  observer.observe(document.body, { childList: true, subtree: true });
-}
-
-function stopDistractionObserver() {
-  if (observer) { observer.disconnect(); observer = null; }
-  document.querySelectorAll('[data-neuro-hidden]').forEach(el => {
-    el.style.display = '';
-    el.removeAttribute('data-neuro-hidden');
+    el.style.display = 'none';
+    el.setAttribute('data-neuro-hidden', 'true');
   });
 }
 
@@ -1654,10 +1921,20 @@ function removeAnimations() {
 
 function startAnimationObserver() {
   if (animationObserver) animationObserver.disconnect();
-  animationObserver = new MutationObserver(() => {
-    document.querySelectorAll('video, audio').forEach(media => {
-      if (!media.hasAttribute('data-neuro-paused')) { media.pause(); media.setAttribute('data-neuro-paused', 'true'); }
-    });
+  animationObserver = createBatchedMutationObserver({
+    delay: 150,
+    maxNodes: 40,
+    onBatch: ({ roots }) => {
+      if (!currentSettings.removeAnimations) return;
+      roots.forEach(root => {
+        if (['VIDEO', 'AUDIO'].includes(root.tagName)) {
+          if (!root.hasAttribute('data-neuro-paused')) { root.pause(); root.setAttribute('data-neuro-paused', 'true'); }
+        }
+        root.querySelectorAll?.('video, audio').forEach(media => {
+          if (!media.hasAttribute('data-neuro-paused')) { media.pause(); media.setAttribute('data-neuro-paused', 'true'); }
+        });
+      });
+    }
   });
   animationObserver.observe(document.body, { childList: true, subtree: true });
 }
@@ -1795,66 +2072,220 @@ function findMainContent() {
 async function simplifyPageWithAI() {
   const mainContent = findMainContent();
   if (!mainContent) {
-    showNotification('Could not find content on this page', 'error');
+    showNotification('Could not find content', 'error');
     return;
   }
 
-  const textElements = mainContent.querySelectorAll('p, li');
-  if (textElements.length === 0) {
-    showNotification('No text found to simplify', 'error');
-    return;
-  }
+  // Target all meaningful text blocks
+  const textElements = mainContent.querySelectorAll('p, li, blockquote');
+  showNotification('AI is restructuring page...', 'loading');
 
-  const textToSimplify = [];
   for (const el of textElements) {
-    if (el.innerText.trim().length > 80) textToSimplify.push({ element: el, text: el.innerText });
-  }
+    const originalText = (el.innerText || '').trim();
+    if (originalText.length < 60) continue; // Skip short snippets
 
-  let combinedText = textToSimplify.map(t => t.text).join(' ');
-  if (combinedText.length > 2500) combinedText = combinedText.substring(0, 2500);
+    // Call AI for this specific block to ensure 1:1 restructuring
+    safeSendMessage({ action: 'simplifyText', text: originalText }, (response) => {
+      if (response?.success && response.simplifiedText) {
+        const rawText = response.simplifiedText;
+        
+        // SPLIT the AI text into an array of bullets
+        const bulletPoints = rawText
+          .split(/\n/)
+          .map(line => line.replace(/^[-•*]\s*/, '').trim())
+          .filter(line => line.length > 0);
 
-  showNotification('AI is simplifying this page...', 'loading');
+        const expandedPoints = [];
+        bulletPoints.forEach(point => {
+          const sentences = splitIntoSentences(point);
+          if (sentences.length <= 1) {
+            expandedPoints.push(point);
+            return;
+          }
+          sentences.forEach(sentence => expandedPoints.push(sentence));
+        });
 
-  // Safe message send
-  safeSendMessage({ action: 'simplifyText', text: combinedText }, (response, error) => {
-    if (error) {
-      showNotification('AI service unavailable. Using basic simplification.', 'error');
-      applyBasicSimplification(textToSimplify);
-    } else if (response?.success) {
-      const chunks = response.simplifiedText.split(/(?<=[.!?])\s+/);
-      let chunkIndex = 0;
-      for (let i = 0; i < textToSimplify.length && chunkIndex < chunks.length; i++) {
-        if (chunks[chunkIndex]?.trim()) {
-          textToSimplify[i].element.innerText = chunks[chunkIndex].trim();
-          textToSimplify[i].element.style.backgroundColor = 'rgba(108,92,231,0.05)';
-          textToSimplify[i].element.style.borderLeft = '3px solid #6c5ce7';
-          textToSimplify[i].element.style.paddingLeft = '12px';
-          textToSimplify[i].element.setAttribute('data-neuro-simplified', 'true');
-          textToSimplify[i].element.setAttribute('data-neuro-original', textToSimplify[i].text.substring(0, 500));
-        }
-        chunkIndex++;
+        // CLEAR the original element and turn it into a list container
+        el.innerHTML = ''; 
+        el.classList.add('neuro-simplified-container');
+        
+        const list = document.createElement('ul');
+        list.style.listStyle = 'none';
+        list.style.padding = '0';
+        list.style.margin = '0';
+
+        expandedPoints.forEach(point => {
+          const li = document.createElement('li');
+          li.innerHTML = `<span style="color:#6c5ce7; margin-right:8px;">•</span>${point}`;
+          li.style.marginBottom = '8px';
+          li.style.display = 'block';
+          list.appendChild(li);
+        });
+
+        el.appendChild(list);
+        
+        // Add the Restore/Original button at the bottom
+        addRestoreButtonToElement(el, originalText);
+        
+        // Apply visual styling to the parent container
+        el.style.backgroundColor = 'rgba(108,92,231,0.05)';
+        el.style.borderLeft = '4px solid #6c5ce7';
+        el.style.padding = '15px';
+        el.style.borderRadius = '12px';
+        el.setAttribute('data-neuro-simplified', 'true');
       }
-      showNotification('✓ Page simplified!', 'success');
-    } else {
-      showNotification('Using basic simplification', 'error');
-      applyBasicSimplification(textToSimplify);
-    }
-  });
+    });
+  }
+  showNotification('✓ Page restructured into bullets!', 'success');
 }
 
+function splitIntoSentences(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return [];
+  const sentences = [];
+  let buffer = '';
+  for (let i = 0; i < clean.length; i++) {
+    const char = clean[i];
+    buffer += char;
+    if (char === '.' || char === '!' || char === '?') {
+      const next = clean[i + 1] || '';
+      if (next === ' ' || next === '') {
+        const trimmed = buffer.trim();
+        if (trimmed) sentences.push(trimmed);
+        buffer = '';
+      }
+    }
+  }
+  const remainder = buffer.trim();
+  if (remainder) sentences.push(remainder);
+  return sentences;
+}
+// Replace applyBasicSimplification with more aggressive version
 function applyBasicSimplification(textToSimplify) {
-  const replacements = { 'utilize': 'use', 'implement': 'use', 'additional': 'more', 'purchase': 'buy', 'numerous': 'many', 'facilitate': 'help', 'terminate': 'end', 'demonstrate': 'show', 'consequently': 'so', 'nevertheless': 'but', 'furthermore': 'also', 'approximately': 'about', 'significant': 'big', 'substantial': 'large' };
   for (const item of textToSimplify) {
     let text = item.text;
-    for (const [complex, simple] of Object.entries(replacements)) {
-      text = text.replace(new RegExp(`\\b${complex}\\b`, 'gi'), simple);
+    let originalLength = text.length;
+    
+    // Step 1: Extract key sentences
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 15);
+    
+    // Step 2: Take only the most important sentences (max 5)
+    let keySentences = [];
+    if (sentences.length <= 3) {
+      keySentences = sentences;
+    } else {
+      // First sentence (usually main idea)
+      keySentences.push(sentences[0]);
+      // Middle sentence (context)
+      if (sentences.length > 3) {
+        keySentences.push(sentences[Math.floor(sentences.length / 2)]);
+      }
+      // Last sentence (conclusion)
+      keySentences.push(sentences[sentences.length - 1]);
     }
-    item.element.innerText = text;
-    item.element.style.backgroundColor = 'rgba(108,92,231,0.05)';
-    item.element.style.borderLeft = '3px solid #6c5ce7';
-    item.element.style.paddingLeft = '12px';
+    
+    // Step 3: Aggressive word simplification
+    const replacements = {
+      'utilize': 'use', 'implement': 'use', 'additional': 'more',
+      'purchase': 'buy', 'numerous': 'many', 'facilitate': 'help',
+      'terminate': 'end', 'demonstrate': 'show', 'consequently': 'so',
+      'nevertheless': 'but', 'furthermore': 'also', 'approximately': 'about',
+      'significant': 'big', 'substantial': 'large', 'however': 'but',
+      'therefore': 'so', 'moreover': 'also', 'nevertheless': 'still',
+      'subsequent': 'next', 'prior to': 'before', 'in order to': 'to',
+      'due to': 'because of', 'as well as': 'and', 'in addition to': 'plus',
+      'a number of': 'some', 'a variety of': 'many', 'a lack of': 'no',
+      'in the event that': 'if', 'on the other hand': 'but',
+      'as a result': 'so', 'in conclusion': 'in short', 'to summarize': 'in short'
+    };
+    
+    let simplifiedText = '';
+    for (const sentence of keySentences) {
+      let processed = sentence.trim();
+      for (const [complex, simple] of Object.entries(replacements)) {
+        const regex = new RegExp(`\\b${complex}\\b`, 'gi');
+        processed = processed.replace(regex, simple);
+      }
+      // Remove passive voice
+      processed = processed.replace(/\b(was|were|been|being)\s+(\w+ed)\b/gi, '$2');
+      // Shorten
+      if (processed.length > 100) {
+        processed = processed.substring(0, 97) + '...';
+      }
+      simplifiedText += processed + '\n\n';
+    }
+    
+    // Step 4: Convert to bullet points
+    const bulletPoints = simplifiedText.split('\n\n').filter(p => p.trim());
+    let finalText = '';
+    for (let i = 0; i < bulletPoints.length; i++) {
+      if (i === 0) {
+        finalText += `📌 ${bulletPoints[i]}\n\n`;
+      } else if (i === bulletPoints.length - 1 && bulletPoints.length > 2) {
+        finalText += `✅ ${bulletPoints[i]}`;
+      } else {
+        finalText += `• ${bulletPoints[i]}\n\n`;
+      }
+    }
+    
+    // Apply to element with visual styling
+    item.element.innerHTML = finalText;
+    item.element.classList.add('neuro-simplified');
+    item.element.style.backgroundColor = 'rgba(108,92,231,0.08)';
+    item.element.style.borderLeft = '4px solid #6c5ce7';
+    item.element.style.padding = '12px 16px';
+    item.element.style.borderRadius = '12px';
+    item.element.style.marginBottom = '16px';
+    item.element.style.fontSize = '16px';
+    item.element.style.lineHeight = '1.5';
     item.element.setAttribute('data-neuro-simplified', 'true');
+    
+    // Add a "Show Original" button next to simplified text
+    addRestoreButtonToElement(item.element, item.text);
   }
+}
+
+function addRestoreButtonToElement(element, originalText) {
+  // Don't add if button already exists for this element
+  if (element.querySelector('.neuro-restore-btn')) return;
+  
+  const restoreBtn = document.createElement('button');
+  restoreBtn.className = 'neuro-restore-btn';
+  restoreBtn.innerHTML = '↺ Original';
+  restoreBtn.style.cssText = `
+    display: inline-block;
+    margin-left: 12px;
+    padding: 2px 8px;
+    font-size: 11px;
+    background: #2d2d44;
+    color: #aaa;
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  `;
+  restoreBtn.onmouseenter = () => { restoreBtn.style.background = '#6c5ce7'; restoreBtn.style.color = 'white'; };
+  restoreBtn.onmouseleave = () => { restoreBtn.style.background = '#2d2d44'; restoreBtn.style.color = '#aaa'; };
+  
+  let isOriginal = false;
+  restoreBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (isOriginal) {
+      // Show simplified again - need to regenerate
+      element.innerHTML = element.innerHTML.replace(originalText, '');
+      restoreBtn.innerHTML = '↺ Original';
+    } else {
+      // Store current simplified text
+      const currentText = element.innerText;
+      element.setAttribute('data-neuro-simplified-text', currentText);
+      element.innerText = originalText;
+      restoreBtn.innerHTML = '✨ Simplified';
+    }
+    isOriginal = !isOriginal;
+  };
+  
+  element.style.position = 'relative';
+  element.appendChild(restoreBtn);
 }
 
 // ========== NOTIFICATION FUNCTION ==========
@@ -1874,111 +2305,401 @@ function showNotification(message, type) {
 
 // ========== 8. JARGON EXPLAINER ==========
 
-const jargonCache = new Map();
-const jargonPending = new Map();
+// ========== 8. JARGON EXPLAINER (GEMINI-POWERED) ==========
 
-function isJargonWord(word) {
-  const clean = word.toLowerCase().replace(/[^a-z]/g, '');
+const jargonCache = new Map();  // Cache for definitions to avoid repeated API calls
+const jargonPending = new Map(); // Track in-flight requests
+let jargonObserver = null;
+let jargonScanTimeout = null;
+
+// Clean word for caching
+function cleanWord(word) {
+  return word.toLowerCase().replace(/[^a-z]/g, '');
+}
+
+// Check if a word might be jargon (heuristic - fast filtering before API call)
+function isLikelyJargon(word) {
+  if (!word || word.length < 5) return false;
+  
+  const clean = cleanWord(word);
   if (clean.length < 5) return false;
-  // if (jargonDictionary[clean]) return true; // Removed to prevent ReferenceError
-  const common = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'with', 'have', 'this', 'that', 'from', 'they', 'will', 'would', 'could', 'should', 'about', 'there', 'their', 'which'];
-  return clean.length > 8 && !common.includes(clean);
+  
+  // Common words that are definitely not jargon
+  const commonWords = new Set([
+    'the', 'and', 'for', 'are', 'but', 'not', 'you', 'with', 'have', 'this',
+    'that', 'from', 'they', 'will', 'would', 'could', 'should', 'about', 'there',
+    'their', 'which', 'what', 'when', 'where', 'who', 'whom', 'such', 'these',
+    'those', 'then', 'than', 'into', 'upon', 'under', 'over', 'after', 'before',
+    'above', 'below', 'between', 'through', 'during', 'without', 'within', 'along',
+    'following', 'including', 'according', 'because', 'therefore', 'however',
+    'meanwhile', 'nevertheless', 'furthermore', 'consequently', 'accordingly',
+    'hello', 'thank', 'please', 'sorry', 'yes', 'no', 'maybe', 'always', 'never',
+    'sometimes', 'usually', 'often', 'rarely', 'quickly', 'slowly', 'carefully',
+    'happily', 'sadly', 'loudly', 'quietly', 'brightly', 'darkly', 'softly', 'hardly'
+  ]);
+  
+  if (commonWords.has(clean)) return false;
+  
+  // Words that are likely jargon: longer words or technical-looking
+  return clean.length > 6 || /^(re|de|un|in|im|dis|pre|post|anti|pro|sub|super|inter|intra|multi|poly|bio|geo|hydro|thermo|psycho|neuro)/.test(clean);
 }
 
-function getDefinition(word) {
-  const clean = word.toLowerCase().replace(/[^a-z]/g, '');
-  return jargonCache.get(clean) || `Complex term meaning "${clean}"`;
-}
-
-async function fetchJargonDefinition(word, context = '') {
-  const clean = word.toLowerCase().replace(/[^a-z]/g, '');
-  if (!clean) return 'No definition available.';
-  if (jargonCache.has(clean)) return jargonCache.get(clean);
-  if (jargonPending.has(clean)) return jargonPending.get(clean);
-
+// Get definition from Gemini API
+async function getGeminiDefinition(word, context = '') {
+  const clean = cleanWord(word);
+  if (!clean) return null;
+  
+  // Check cache first
+  if (jargonCache.has(clean)) {
+    console.log(`Jargon cache hit: ${clean}`);
+    return jargonCache.get(clean);
+  }
+  
+  // Check if already fetching
+  if (jargonPending.has(clean)) {
+    console.log(`Waiting for pending request: ${clean}`);
+    return jargonPending.get(clean);
+  }
+  
+  // Create promise for this request
   const requestPromise = new Promise((resolve) => {
+    console.log(`Fetching Gemini definition for: ${clean}`);
     safeSendMessage({ action: 'defineJargon', word: clean, context }, (response, error) => {
-      if (error || !response?.success) {
+      if (error || !response?.success || !response?.definition) {
         const detail = response?.error || error?.message || 'Unknown error';
         resolve(`Error: ${detail}`);
         return;
       }
-      resolve(response.definition || `Complex term meaning "${clean}"`);
+      resolve(response.definition);
     });
-  }).then((definition) => {
-    jargonCache.set(clean, definition);
-    jargonPending.delete(clean);
-    return definition;
   });
-
+  
+  // Store the promise to avoid duplicate requests
   jargonPending.set(clean, requestPromise);
-  return requestPromise;
+  
+  // Wait for the definition and cache it
+  const definition = await requestPromise;
+  jargonCache.set(clean, definition);
+  jargonPending.delete(clean);
+  
+  // Limit cache size
+  if (jargonCache.size > 300) {
+    const firstKey = jargonCache.keys().next().value;
+    jargonCache.delete(firstKey);
+  }
+  
+  return definition;
 }
 
-function initJargonExplainer() {
-  setTimeout(() => {
-    const mainContent = findMainContent();
-    if (!mainContent) return;
-
-    const walker = document.createTreeWalker(mainContent, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => {
-        if (node.parentElement?.classList?.contains('neuro-jargon-word')) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-
-    const textNodes = [];
-    while (walker.nextNode()) textNodes.push(walker.currentNode);
-
-    textNodes.forEach(node => {
-      const words = node.textContent.split(/(\s+)/);
-      for (let i = 0; i < words.length; i++) {
-        const word = words[i];
-        if (word?.trim() && isJargonWord(word.trim())) {
-          const cleanWord = word.trim().replace(/[^a-z]/gi, '');
-          const span = document.createElement('span');
-          span.className = 'neuro-jargon-word';
-          span.textContent = word;
-          span.style.borderBottom = '2px dotted #6c5ce7';
-          span.style.cursor = 'help';
-          span.addEventListener('mouseenter', async (e) => {
-            const rect = span.getBoundingClientRect();
-            showJargonTooltip(cleanWord, 'Looking up meaning…', rect.left, rect.top);
-            // Safe message send
-            safeSendMessage({ action: 'trackJargonHover' });
-            const sentence = span.parentElement?.innerText?.slice(0, 220) || '';
-            const definition = await fetchJargonDefinition(cleanWord, sentence);
-            updateJargonTooltip(cleanWord, definition, rect.left, rect.top);
-          });
-          words[i] = span;
-        }
-      }
-      const fragment = document.createDocumentFragment();
-      words.forEach(item => fragment.appendChild(typeof item === 'string' ? document.createTextNode(item) : item));
-      node.parentNode.replaceChild(fragment, node);
-    });
-  }, 1000);
+// Generate a fallback definition when API is unavailable
+function generateFallbackDefinition(word) {
+  const clean = cleanWord(word);
+  
+  // Simple heuristics for common patterns
+  if (clean.endsWith('tion') || clean.endsWith('sion')) {
+    return `"${word}" - the act or result of doing something`;
+  }
+  if (clean.endsWith('ing')) {
+    return `"${word}" - the process of ${clean.slice(0, -3)}ing`;
+  }
+  if (clean.endsWith('er') || clean.endsWith('or')) {
+    return `"${word}" - a person or thing that does something`;
+  }
+  if (clean.endsWith('able') || clean.endsWith('ible')) {
+    return `"${word}" - capable of being done`;
+  }
+  if (clean.startsWith('re')) {
+    return `"${word}" - to do again or go back`;
+  }
+  if (clean.startsWith('un')) {
+    return `"${word}" - not or opposite of`;
+  }
+  if (clean.startsWith('pre')) {
+    return `"${word}" - before or earlier`;
+  }
+  
+  return `"${word}" - a specific term. Hover for AI definition (needs API key)`;
 }
 
-function showJargonTooltip(word, definition, x, y) {
-  const existing = document.getElementById('neuro-jargon-tooltip');
-  if (existing) existing.remove();
+// Show tooltip with definition
+let activeTooltip = null;
+let tooltipTimeout = null;
 
+function showJargonTooltip(word, definition, x, y, isLoading = false) {
+  // Remove existing tooltip
+  if (activeTooltip) {
+    activeTooltip.remove();
+    activeTooltip = null;
+  }
+  
   const tooltip = document.createElement('div');
   tooltip.id = 'neuro-jargon-tooltip';
-  tooltip.innerHTML = `<strong style="color:#6c5ce7;">📖 ${word}</strong><br>${definition}`;
-  tooltip.style.cssText = `position:fixed; left:${x + 10}px; top:${y - 10}px; z-index:1000001; background:#1a1a2e; color:#eee; border-radius:12px; padding:12px 16px; max-width:280px; box-shadow:0 8px 24px rgba(0,0,0,0.3); border-left:4px solid #6c5ce7; font-family:system-ui,sans-serif; font-size:13px; animation:fadeIn 0.2s ease;`;
+  
+  if (isLoading) {
+    tooltip.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="animation: spin 1s linear infinite;">🔄</span>
+        <span>Looking up "${word}"...</span>
+      </div>
+    `;
+  } else {
+    tooltip.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+        <span style="font-size:16px;">📖</span>
+        <strong style="color:#6c5ce7;">${escapeHtml(word)}</strong>
+      </div>
+      <div style="font-size:12px; line-height:1.4;">${escapeHtml(definition)}</div>
+      <div style="font-size:10px; color:#888; margin-top:6px;">🤖 AI-powered definition</div>
+    `;
+  }
+  
+  tooltip.style.cssText = `
+    position: fixed;
+    left: ${Math.min(x + 10, window.innerWidth - 300)}px;
+    top: ${y - 10}px;
+    z-index: 1000001;
+    background: #1a1a2e;
+    color: #eee;
+    border-radius: 12px;
+    padding: 12px 16px;
+    max-width: 300px;
+    min-width: 180px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    border-left: 4px solid #6c5ce7;
+    font-family: system-ui, sans-serif;
+    font-size: 13px;
+    animation: fadeIn 0.2s ease;
+    pointer-events: none;
+    backdrop-filter: blur(8px);
+  `;
+  
   document.body.appendChild(tooltip);
-  setTimeout(() => tooltip.remove(), 4000);
+  activeTooltip = tooltip;
+  
+  // Auto-hide after 8 seconds
+  if (tooltipTimeout) clearTimeout(tooltipTimeout);
+  tooltipTimeout = setTimeout(() => {
+    if (activeTooltip) {
+      activeTooltip.remove();
+      activeTooltip = null;
+    }
+  }, 8000);
 }
 
-function updateJargonTooltip(word, definition, x, y) {
-  const tooltip = document.getElementById('neuro-jargon-tooltip');
-  if (!tooltip) {
-    showJargonTooltip(word, definition, x, y);
-    return;
+function hideJargonTooltip() {
+  if (tooltipTimeout) clearTimeout(tooltipTimeout);
+  if (activeTooltip) {
+    activeTooltip.remove();
+    activeTooltip = null;
   }
-  tooltip.innerHTML = `<strong style="color:#6c5ce7;">📖 ${word}</strong><br>${definition}`;
+}
+
+// Helper to escape HTML
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/[&<>]/g, function(m) {
+    if (m === '&') return '&amp;';
+    if (m === '<') return '&lt;';
+    if (m === '>') return '&gt;';
+    return m;
+  });
+}
+
+// Scan page and wrap jargon words
+function scanJargonInRoot(root) {
+  if (!root || !currentSettings.jargonExplainer) return;
+  
+  console.log('Scanning for jargon words...');
+  
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      // Skip if already processed or inside script/style
+      if (node.parentElement?.classList?.contains('neuro-jargon-word')) return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.tagName === 'SCRIPT') return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.tagName === 'STYLE') return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.tagName === 'CODE') return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.tagName === 'PRE') return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  const textNodes = [];
+  while (walker.nextNode()) {
+    if (textNodes.length < 800) textNodes.push(walker.currentNode);
+  }
+  
+  console.log(`Found ${textNodes.length} text nodes to scan`);
+
+  textNodes.forEach(node => {
+    const text = node.textContent;
+    if (!text || text.length < 30) return;
+    
+    // Split into words, preserving spaces and punctuation
+    const words = text.split(/(\s+|[.,!?;:()\[\]{}"'])/);
+    let modified = false;
+    let jargonWordsFound = [];
+    
+    for (let i = 0; i < words.length; i++) {
+      const token = words[i];
+      if (!token || !token.trim()) continue;
+      
+      // Check if this token might be a word (contains letters)
+      if (/[a-zA-Z]/.test(token)) {
+        const clean = token.toLowerCase().replace(/[^a-z]/g, '');
+        if (clean.length >= 5 && isLikelyJargon(clean)) {
+          jargonWordsFound.push({ token, clean, index: i });
+        }
+      }
+    }
+    
+    // Process found jargon words
+    for (const { token, clean, index } of jargonWordsFound) {
+      const span = document.createElement('span');
+      span.className = 'neuro-jargon-word';
+      span.textContent = token;
+      span.style.borderBottom = '2px dotted #6c5ce7';
+      span.style.cursor = 'help';
+      span.style.display = 'inline';
+      span.style.transition = 'background-color 0.2s';
+      span.setAttribute('data-jargon-word', clean);
+      
+      let definitionLoaded = false;
+      let currentDefinition = null;
+      
+      span.addEventListener('mouseenter', async (e) => {
+        const rect = span.getBoundingClientRect();
+        
+        // Show loading tooltip
+        showJargonTooltip(clean, 'Fetching definition...', rect.left, rect.top, true);
+        
+        // Get definition from Gemini
+        const context = getContextForWord(span);
+        const definition = await getGeminiDefinition(clean, context);
+        
+        if (!definitionLoaded) {
+          definitionLoaded = true;
+          currentDefinition = definition;
+          showJargonTooltip(clean, definition, rect.left, rect.top, false);
+        }
+        
+        // Track hover for analytics
+        safeSendMessage({ action: 'trackJargonHover' });
+      });
+      
+      span.addEventListener('mouseleave', () => {
+        hideJargonTooltip();
+      });
+      
+      words[index] = span;
+      modified = true;
+    }
+    
+    if (modified) {
+      const fragment = document.createDocumentFragment();
+      words.forEach(item => {
+        if (typeof item === 'string') {
+          fragment.appendChild(document.createTextNode(item));
+        } else {
+          fragment.appendChild(item);
+        }
+      });
+      node.parentNode.replaceChild(fragment, node);
+    }
+  });
+  
+  console.log('Jargon scan complete');
+}
+
+// Get surrounding text for better context
+function getContextForWord(element) {
+  const parent = element.parentElement;
+  if (!parent) return '';
+  
+  // Get up to 100 characters before and after
+  const text = parent.innerText || '';
+  const wordText = element.textContent;
+  const wordIndex = text.indexOf(wordText);
+  
+  if (wordIndex === -1) return '';
+  
+  const start = Math.max(0, wordIndex - 60);
+  const end = Math.min(text.length, wordIndex + wordText.length + 60);
+  let context = text.substring(start, end);
+  
+  // Clean up context
+  context = context.replace(/\s+/g, ' ').trim();
+  
+  return context;
+}
+
+// Initialize jargon explainer
+function initJargonExplainer() {
+  if (!currentSettings.jargonExplainer) return;
+  
+  console.log('Initializing Gemini-powered Jargon Explainer...');
+  
+  // Debounce scanning to avoid performance issues
+  if (jargonScanTimeout) clearTimeout(jargonScanTimeout);
+  
+  jargonScanTimeout = setTimeout(() => {
+    const mainContent = findMainContent();
+    if (mainContent) {
+      scanJargonInRoot(mainContent);
+    } else {
+      scanJargonInRoot(document.body);
+    }
+    startJargonObserver();
+  }, 1500);
+}
+
+function startJargonObserver() {
+  if (jargonObserver) jargonObserver.disconnect();
+  
+  jargonObserver = new MutationObserver((mutations) => {
+    // Debounce observer to avoid excessive scanning
+    if (jargonScanTimeout) clearTimeout(jargonScanTimeout);
+    
+    jargonScanTimeout = setTimeout(() => {
+      if (!currentSettings.jargonExplainer) return;
+      
+      // Check if new content was added
+      let hasNewContent = false;
+      for (const mutation of mutations) {
+        if (mutation.addedNodes.length > 0) {
+          hasNewContent = true;
+          break;
+        }
+      }
+      
+      if (hasNewContent) {
+        const mainContent = findMainContent();
+        scanJargonInRoot(mainContent || document.body);
+      }
+    }, 1000);
+  });
+  
+  jargonObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopJargonObserver() {
+  if (jargonObserver) {
+    jargonObserver.disconnect();
+    jargonObserver = null;
+  }
+  if (jargonScanTimeout) clearTimeout(jargonScanTimeout);
+}
+
+// Also add spin animation for loading state
+if (!document.getElementById('neuro-jargon-spin-style')) {
+  const spinStyle = document.createElement('style');
+  spinStyle.id = 'neuro-jargon-spin-style';
+  spinStyle.textContent = `
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+  `;
+  document.head.appendChild(spinStyle);
 }
 
 // ========== 8.5 TONE DECODER ==========
@@ -2228,6 +2949,10 @@ if (!document.getElementById('neuro-animation-style')) {
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(-5px); }
       to { opacity: 1; transform: translateY(0); }
+    }
+    .neuro-simplified {
+      transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease;
+      will-change: background-color, border-color, color, transform;
     }
   `;
   document.head.appendChild(animStyle);
