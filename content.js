@@ -18,12 +18,15 @@ let currentSettings = {
   sensoryAutoBlocker: false
 };
 
+const DEFAULT_READING_AGE = 12;
+
 let readingRulerElement = null;
 let observer = null;
 let animationObserver = null;
 let cognitiveScoreDisplay = null;
 let learnedOverrides = {};
 let layoutStabilizerObserver = null;
+let semanticArchitectApplied = false;
 
 const TRACKED_FEATURES = [
   'dyslexicFont',
@@ -233,7 +236,7 @@ function collectCandidateElements(root) {
 // ========== INITIALIZATION ==========
 
 chrome.storage.local.get(
-  ['dyslexicFont', 'softColors', 'themeMode', 'themePalette', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled', 'bionicReading', 'sensoryAutoBlocker', 'cinemaFocus'],
+  ['dyslexicFont', 'softColors', 'themeMode', 'themePalette', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled', 'bionicReading', 'sensoryAutoBlocker', 'cinemaFocus', 'preferredReadingAge'],
   (result) => {
     currentSettings.dyslexicFont = result.dyslexicFont || false;
     currentSettings.softColors = result.softColors || false;
@@ -250,8 +253,12 @@ chrome.storage.local.get(
     currentSettings.bionicReading = result.bionicReading || false;
     currentSettings.sensoryAutoBlocker = result.sensoryAutoBlocker || false;
     currentSettings.cinemaFocus = result.cinemaFocus || false;
+    currentSettings.preferredReadingAge = Number.isFinite(result.preferredReadingAge)
+      ? result.preferredReadingAge
+      : DEFAULT_READING_AGE;
 
     applyAllModifications();
+    maybeRunAgentLoop('initial-load');
 
     if (currentSettings.simplifyText) {
       if (document.readyState === 'loading') {
@@ -261,11 +268,15 @@ chrome.storage.local.get(
       }
     }
 
+    maybeAutoSimplifyByReadingAge();
+
     if (!currentSettings.readingRuler) {
       removeReadingRuler();
     }
 
     refreshLearnedPreferences();
+
+    ensureGoalStickyNote();
 
     if (currentSettings.cognitiveScoring) {
       setTimeout(() => calculateAndDisplayCognitiveScore(), 1500);
@@ -282,6 +293,7 @@ try {
         currentSettings = { ...currentSettings, ...request.settings };
         recordFeatureOverrides(previousSettings, currentSettings);
         applyAllModifications();
+        maybeRunAgentLoop('settings-updated');
         if (!previousSettings.simplifyText && currentSettings.simplifyText) {
           if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => simplifyPageWithAI());
@@ -311,6 +323,25 @@ try {
         sendResponse({ success: true });
       }
 
+      if (request.action === 'speakText') {
+        const result = handleSpeakRequest(request);
+        sendResponse(result);
+      }
+
+      if (request.action === 'getHeadings') {
+        sendResponse({ success: true, headings: getHeadingsList() });
+      }
+
+      if (request.action === 'stopSpeech') {
+        stopSpeech();
+        sendResponse({ success: true });
+      }
+
+      if (request.action === 'showMeditationBreak') {
+        showMeditationBreak();
+        sendResponse({ success: true });
+      }
+
       return true;
 
     } catch (e) {
@@ -334,6 +365,500 @@ function applyAllModifications() {
     try { removeReadingRuler(); } catch (e) { }
     try { stopAnimationObserver(); } catch (e) { }
     try { removeStructuredLayout(); } catch (e) { }
+  });
+}
+
+function maybeAutoSimplifyByReadingAge() {
+  const sampleText = (document.body?.innerText || '').trim().slice(0, 4000);
+  if (!sampleText || sampleText.length < 200) return;
+  if (!currentSettings.preferredReadingAge) currentSettings.preferredReadingAge = DEFAULT_READING_AGE;
+
+  safeSendMessage({ action: 'estimateReadingAge', text: sampleText }, (response, error) => {
+    if (error || !response?.success) return;
+    const readingAge = Number(response?.result?.age) || 0;
+    if (readingAge > currentSettings.preferredReadingAge) {
+      simplifyPageWithAI();
+    }
+  });
+}
+
+function ensureGoalStickyNote() {
+  if (document.getElementById('neuro-goal-note')) return;
+
+  const styleId = 'neuro-goal-note-style';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      #neuro-goal-note { position: fixed; top: 120px; right: 20px; z-index: 1000003; width: 220px; background: #fff4b0; color: #2b2b2b; border-radius: 12px; box-shadow: 0 10px 26px rgba(0,0,0,0.2); font-family: system-ui, sans-serif; }
+      #neuro-goal-note header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; font-weight: 700; font-size: 12px; }
+      #neuro-goal-note textarea { width: 100%; min-height: 120px; border: none; padding: 10px 12px; background: transparent; resize: vertical; font-size: 12px; outline: none; }
+      #neuro-goal-note .goal-actions { display: flex; gap: 6px; padding: 0 12px 12px; }
+      #neuro-goal-note .goal-actions button { flex: 1; border: none; border-radius: 8px; padding: 6px; font-size: 11px; cursor: pointer; }
+      #neuro-goal-note .goal-save { background: #6c5ce7; color: #fff; }
+      #neuro-goal-note .goal-clear { background: #2d314f; color: #fff; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const note = document.createElement('div');
+  note.id = 'neuro-goal-note';
+  note.innerHTML = `
+    <header id="neuro-goal-header">
+      <span>🎯 Focus Goal</span>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button id="neuro-goal-toggle" style="border:none; background:#2d314f; color:#fff; border-radius:6px; padding:2px 6px; font-size:10px; cursor:pointer;">–</button>
+        <span style="opacity:0.6; font-size:11px;">Sticky</span>
+      </div>
+    </header>
+    <div id="neuro-goal-body">
+      <textarea id="neuro-goal-input" placeholder="Write your goal here..."></textarea>
+      <div class="goal-actions">
+        <button class="goal-save" id="neuro-goal-save">Save</button>
+        <button class="goal-clear" id="neuro-goal-clear">Clear</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(note);
+
+  const input = note.querySelector('#neuro-goal-input');
+  const saveBtn = note.querySelector('#neuro-goal-save');
+  const clearBtn = note.querySelector('#neuro-goal-clear');
+  const header = note.querySelector('#neuro-goal-header');
+  const body = note.querySelector('#neuro-goal-body');
+  const toggleBtn = note.querySelector('#neuro-goal-toggle');
+
+  chrome.storage.local.get(['userIntent', 'goalNotePosition', 'goalNoteCollapsed'], (result) => {
+    if (input) input.value = result.userIntent || '';
+    if (result.goalNotePosition && typeof result.goalNotePosition.x === 'number' && typeof result.goalNotePosition.y === 'number') {
+      note.style.left = `${result.goalNotePosition.x}px`;
+      note.style.top = `${result.goalNotePosition.y}px`;
+      note.style.right = 'auto';
+    }
+    const collapsed = result.goalNoteCollapsed === true;
+    if (body) body.style.display = collapsed ? 'none' : 'block';
+    if (toggleBtn) toggleBtn.textContent = collapsed ? '+' : '–';
+  });
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      const value = (input?.value || '').trim();
+      chrome.storage.local.set({ userIntent: value });
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (input) input.value = '';
+      chrome.storage.local.set({ userIntent: '' });
+    });
+  }
+
+  if (toggleBtn && body) {
+    toggleBtn.addEventListener('click', () => {
+      const collapsed = body.style.display === 'none';
+      body.style.display = collapsed ? 'block' : 'none';
+      toggleBtn.textContent = collapsed ? '–' : '+';
+      chrome.storage.local.set({ goalNoteCollapsed: !collapsed });
+    });
+  }
+
+  if (header) {
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let originLeft = 0;
+    let originTop = 0;
+
+    const onMove = (event) => {
+      if (!dragging) return;
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      note.style.left = `${originLeft + dx}px`;
+      note.style.top = `${originTop + dy}px`;
+      note.style.right = 'auto';
+    };
+
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      const rect = note.getBoundingClientRect();
+      chrome.storage.local.set({ goalNotePosition: { x: rect.left, y: rect.top } });
+    };
+
+    header.addEventListener('mousedown', (event) => {
+      if (event.target === toggleBtn) return;
+      dragging = true;
+      const rect = note.getBoundingClientRect();
+      startX = event.clientX;
+      startY = event.clientY;
+      originLeft = rect.left;
+      originTop = rect.top;
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+}
+
+function showMeditationBreak() {
+  if (document.getElementById('neuro-break-overlay')) return;
+
+  const styleId = 'neuro-break-style';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      #neuro-break-overlay { position: fixed; inset: 0; background: rgba(10,12,20,0.65); z-index: 1000004; display: flex; align-items: center; justify-content: center; }
+      #neuro-break-card { width: 360px; max-width: 92vw; background: #13152a; color: #eef0ff; border: 1px solid rgba(255,255,255,0.1); border-radius: 18px; padding: 18px; box-shadow: 0 18px 40px rgba(0,0,0,0.4); font-family: system-ui, sans-serif; }
+      #neuro-break-card h3 { margin: 0 0 8px; font-size: 18px; }
+      #neuro-break-card p { margin: 0 0 10px; font-size: 12px; color: #b8bdd9; line-height: 1.5; }
+      #neuro-break-timer { font-size: 24px; font-weight: 700; margin: 10px 0 12px; color: #ffd43b; }
+      .neuro-break-links { display: grid; gap: 6px; margin-bottom: 12px; }
+      .neuro-break-links a { color: #9aa7ff; text-decoration: none; font-size: 12px; }
+      .neuro-break-actions { display: flex; gap: 8px; }
+      .neuro-break-actions button { flex: 1; border: none; border-radius: 10px; padding: 8px; cursor: pointer; font-size: 12px; }
+      #neuro-break-close { background: #2d314f; color: #fff; }
+      #neuro-break-start { background: #6c5ce7; color: #fff; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'neuro-break-overlay';
+  overlay.innerHTML = `
+    <div id="neuro-break-card">
+      <h3>1-minute reset break</h3>
+      <p>Take a short pause to refresh your focus. Try one of these quick exercises.</p>
+      <div id="neuro-break-timer">01:00</div>
+      <div class="neuro-break-links">
+        <a href="https://www.youtube.com/watch?v=inpok4MKVLM" target="_blank" rel="noreferrer">🧘 1-Minute Breathing (Headspace)</a>
+        <a href="https://www.youtube.com/watch?v=ZToicYcHIOU" target="_blank" rel="noreferrer">🌬️ Box Breathing (1 min)</a>
+        <a href="https://www.youtube.com/watch?v=8TUOaR9mR7A" target="_blank" rel="noreferrer">👀 20-20-20 Eye Break</a>
+      </div>
+      <div class="neuro-break-actions">
+        <button id="neuro-break-start">Start 1-min timer</button>
+        <button id="neuro-break-close">Close</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const timerEl = overlay.querySelector('#neuro-break-timer');
+  const startBtn = overlay.querySelector('#neuro-break-start');
+  const closeBtn = overlay.querySelector('#neuro-break-close');
+
+  let remaining = 60;
+  let intervalId = null;
+
+  const renderTime = () => {
+    const mins = String(Math.floor(remaining / 60)).padStart(2, '0');
+    const secs = String(remaining % 60).padStart(2, '0');
+    if (timerEl) timerEl.textContent = `${mins}:${secs}`;
+  };
+
+  const stopTimer = () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  };
+
+  const startTimer = () => {
+    stopTimer();
+    remaining = 60;
+    renderTime();
+    intervalId = setInterval(() => {
+      remaining -= 1;
+      renderTime();
+      if (remaining <= 0) {
+        stopTimer();
+      }
+    }, 1000);
+  };
+
+  if (startBtn) startBtn.addEventListener('click', startTimer);
+  if (closeBtn) closeBtn.addEventListener('click', () => {
+    stopTimer();
+    overlay.remove();
+  });
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+      stopTimer();
+      overlay.remove();
+    }
+  });
+}
+
+function ensureTtsStyles() {
+  if (document.getElementById('neuro-tts-style')) return;
+  const style = document.createElement('style');
+  style.id = 'neuro-tts-style';
+  style.textContent = `
+    .neuro-tts-highlight {
+      outline: 3px solid rgba(108, 92, 231, 0.7);
+      outline-offset: 4px;
+      background: rgba(108, 92, 231, 0.12);
+      border-radius: 6px;
+    }
+    .neuro-tts-word {
+      background: rgba(255, 212, 59, 0.45);
+      border-radius: 4px;
+      padding: 0 2px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function getHeadingsList() {
+  const main = getMainContentElement() || document.body;
+  if (!main) return [];
+  const headings = Array.from(main.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+    .map((node, index) => {
+      if (!node.getAttribute('data-neuro-tts-id')) {
+        node.setAttribute('data-neuro-tts-id', `heading-${index + 1}`);
+      }
+      const level = node.tagName.toLowerCase();
+      const label = (node.innerText || '').trim().slice(0, 120);
+      return { id: node.getAttribute('data-neuro-tts-id'), label: `${level.toUpperCase()} · ${label}` };
+    })
+    .filter(item => item.label && !item.label.endsWith('·'));
+  return headings;
+}
+
+function getSpeakableBlocks() {
+  const main = getMainContentElement() || document.body;
+  if (!main) return [];
+  const nodes = Array.from(main.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6'));
+  const blocks = nodes
+    .map(node => (node.innerText || '').trim())
+    .filter(text => text.length > 30);
+  if (blocks.length > 0) return blocks;
+  const fallback = (main.innerText || '').trim();
+  return fallback ? [fallback] : [];
+}
+
+function getSpeakableElements() {
+  const main = getMainContentElement() || document.body;
+  if (!main) return [];
+  return Array.from(main.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6'))
+    .filter(node => (node.innerText || '').trim().length > 30);
+}
+
+function getHeadingSectionElements(headingEl) {
+  if (!headingEl) return [];
+  const main = getMainContentElement() || document.body;
+  if (!main) return [headingEl];
+  const elements = [];
+  let started = false;
+
+  const walker = document.createTreeWalker(main, NodeFilter.SHOW_ELEMENT, null);
+  let node = walker.currentNode;
+
+  while (node) {
+    if (node === headingEl) {
+      started = true;
+    }
+
+    if (started) {
+      if (node !== headingEl && /^H[1-6]$/i.test(node.tagName)) break;
+      if (node.matches('p, li, h1, h2, h3, h4, h5, h6')) {
+        if ((node.innerText || '').trim().length > 0) elements.push(node);
+      }
+    }
+
+    node = walker.nextNode();
+  }
+
+  return elements.length > 0 ? elements : [headingEl];
+}
+
+function chunkText(text, chunkSize = 3000) {
+  if (!text) return [];
+  const chunks = [];
+  let start = 0;
+  while (start < text.length) {
+    chunks.push(text.slice(start, start + chunkSize));
+    start += chunkSize;
+  }
+  return chunks;
+}
+
+function clearWordHighlights() {
+  document.querySelectorAll('.neuro-tts-word').forEach(node => {
+    const textNode = document.createTextNode(node.textContent || '');
+    node.replaceWith(textNode);
+  });
+}
+
+function findWordBoundaries(text, index) {
+  if (!text) return null;
+  const length = text.length;
+  let start = Math.max(0, Math.min(index, length - 1));
+  let end = start;
+  const isWordChar = (char) => /[A-Za-z0-9'’\-]/.test(char);
+
+  while (start > 0 && isWordChar(text[start - 1])) start--;
+  while (end < length && isWordChar(text[end])) end++;
+
+  if (start === end) return null;
+  return { start, end };
+}
+
+function highlightWordInElement(element, text, charIndex) {
+  if (!element || !text || typeof charIndex !== 'number') return;
+  const bounds = findWordBoundaries(text, charIndex);
+  if (!bounds) return;
+
+  clearWordHighlights();
+
+  const range = document.createRange();
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+  let currentNode = walker.nextNode();
+  let offset = 0;
+  let startNode = null;
+  let startOffset = 0;
+  let endNode = null;
+  let endOffset = 0;
+
+  while (currentNode) {
+    const nodeText = currentNode.nodeValue || '';
+    const nodeStart = offset;
+    const nodeEnd = offset + nodeText.length;
+
+    if (!startNode && bounds.start >= nodeStart && bounds.start <= nodeEnd) {
+      startNode = currentNode;
+      startOffset = bounds.start - nodeStart;
+    }
+
+    if (bounds.end >= nodeStart && bounds.end <= nodeEnd) {
+      endNode = currentNode;
+      endOffset = bounds.end - nodeStart;
+      break;
+    }
+
+    offset = nodeEnd;
+    currentNode = walker.nextNode();
+  }
+
+  if (!startNode || !endNode) return;
+
+  try {
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, endOffset);
+    const wrapper = document.createElement('span');
+    wrapper.className = 'neuro-tts-word';
+    range.surroundContents(wrapper);
+  } catch (error) {
+    return;
+  }
+}
+
+function speakText(text) {
+  if (!('speechSynthesis' in window)) return { success: false, error: 'Speech synthesis not supported.' };
+  const clean = (text || '').trim();
+  if (!clean) return { success: false, error: 'No text to read.' };
+
+  window.speechSynthesis.cancel();
+  const chunks = chunkText(clean, 3000);
+  chunks.forEach(chunk => {
+    const utterance = new SpeechSynthesisUtterance(chunk);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
+  });
+  return { success: true };
+}
+
+function speakElements(elements) {
+  if (!('speechSynthesis' in window)) return { success: false, error: 'Speech synthesis not supported.' };
+  if (!Array.isArray(elements) || elements.length === 0) return { success: false, error: 'No readable content found.' };
+  ensureTtsStyles();
+
+  window.speechSynthesis.cancel();
+  let currentHighlight = null;
+
+  elements.forEach((element) => {
+    const text = (element.innerText || '').trim();
+    if (!text) return;
+    const chunks = chunkText(text, 2400);
+    let offset = 0;
+    chunks.forEach((chunk, index) => {
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      if (index === 0) {
+        utterance.onstart = () => {
+          if (currentHighlight) currentHighlight.classList.remove('neuro-tts-highlight');
+          currentHighlight = element;
+          element.classList.add('neuro-tts-highlight');
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        };
+      }
+      utterance.onboundary = (event) => {
+        if (event.name !== 'word') return;
+        const absoluteIndex = offset + event.charIndex;
+        highlightWordInElement(element, text, absoluteIndex);
+      };
+      if (index === chunks.length - 1) {
+        utterance.onend = () => {
+          element.classList.remove('neuro-tts-highlight');
+          if (currentHighlight === element) currentHighlight = null;
+          clearWordHighlights();
+        };
+        utterance.onerror = () => {
+          element.classList.remove('neuro-tts-highlight');
+          if (currentHighlight === element) currentHighlight = null;
+          clearWordHighlights();
+        };
+      }
+      window.speechSynthesis.speak(utterance);
+      offset += chunk.length;
+    });
+  });
+
+  return { success: true };
+}
+
+function stopSpeech() {
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+  document.querySelectorAll('.neuro-tts-highlight').forEach(el => el.classList.remove('neuro-tts-highlight'));
+  clearWordHighlights();
+}
+
+function handleSpeakRequest(request) {
+  const mode = request?.mode || 'page';
+  if (mode === 'selection') {
+    const selection = window.getSelection()?.toString() || '';
+    return speakText(selection);
+  }
+
+  if (mode === 'heading') {
+    const headingId = request?.headingId;
+    const headingEl = headingId ? document.querySelector(`[data-neuro-tts-id="${headingId}"]`) : null;
+    if (!headingEl) return { success: false, error: 'Heading not found.' };
+    const sectionElements = getHeadingSectionElements(headingEl);
+    return speakElements(sectionElements);
+  }
+
+  const elements = getSpeakableElements();
+  if (elements.length === 0) return { success: false, error: 'No readable content found.' };
+  return speakElements(elements);
+}
+
+function maybeRunAgentLoop(reason = 'auto') {
+  const cooldownMs = 10 * 60 * 1000;
+  chrome.storage.local.get(['agentLastRun'], (result) => {
+    const lastRun = result.agentLastRun?.timestamp || 0;
+    const now = Date.now();
+    if (now - lastRun < cooldownMs) return;
+    runAgentLoop().catch((error) => {
+      console.warn('Agent loop failed:', reason, error);
+    });
   });
 }
 
@@ -416,7 +941,7 @@ function getEnabledSettingsFromStorage() {
       'dyslexicFont', 'softColors', 'themeMode', 'themePalette',
       'removeDistractions', 'readingRuler', 'removeAnimations',
       'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled',
-      'userIntent', 'bionicReading', 'sensoryAutoBlocker', 'cinemaFocus'
+      'userIntent', 'bionicReading', 'sensoryAutoBlocker', 'cinemaFocus', 'preferredReadingAge'
     ];
     chrome.storage.local.get(keys, (result) => {
       const settings = {
@@ -435,7 +960,10 @@ function getEnabledSettingsFromStorage() {
         userIntent: result.userIntent || '',
         bionicReading: result.bionicReading || false,
         sensoryAutoBlocker: result.sensoryAutoBlocker || false,
-        cinemaFocus: result.cinemaFocus || false
+        cinemaFocus: result.cinemaFocus || false,
+        preferredReadingAge: Number.isFinite(result.preferredReadingAge)
+          ? result.preferredReadingAge
+          : DEFAULT_READING_AGE
       };
 
       resolve(mergeLearnedOverrides(settings));
@@ -1451,9 +1979,12 @@ async function runMasterOrchestrator() {
     () => {
       removeDistractions();
       startDistractionObserver();
+      if (!semanticArchitectApplied) analyzePageStructure();
     },
     () => {
       stopDistractionObserver();
+      restoreDistractions();
+      clearSemanticArchitectPlan();
     }
   );
 
@@ -1761,6 +2292,20 @@ function applyFocusMode(mainContentSelector, distractionSelectors) {
         outline-offset: 6px;
         border-radius: 6px;
       }
+      .neuro-f-pattern {
+        border-left: 4px solid rgba(108,92,231,0.6) !important;
+        padding-left: 12px !important;
+        background: rgba(108,92,231,0.06) !important;
+        border-radius: 10px !important;
+      }
+      .neuro-semantic-card {
+        background: rgba(255, 255, 255, 0.05) !important;
+        border: 1px solid rgba(108,92,231,0.18) !important;
+        border-radius: 16px !important;
+        padding: 16px 18px !important;
+        margin: 14px 0 !important;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.08) !important;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -1783,6 +2328,58 @@ function applyFocusMode(mainContentSelector, distractionSelectors) {
       } catch (e) { }
     });
   }
+}
+
+function applySemanticArchitectPlan(plan = {}) {
+  const { mainContentSelector, distractions, fPatternTargets, cardSelectors } = plan;
+
+  applyFocusMode(mainContentSelector, distractions || []);
+
+  if (Array.isArray(fPatternTargets)) {
+    fPatternTargets.forEach(selector => {
+      try {
+        document.querySelectorAll(selector).forEach(el => el.classList.add('neuro-f-pattern'));
+      } catch (e) { }
+    });
+  }
+
+  if (Array.isArray(cardSelectors)) {
+    cardSelectors.forEach(selector => {
+      try {
+        document.querySelectorAll(selector).forEach(el => {
+          if (!el.classList.contains('neuro-semantic-card')) {
+            el.classList.add('neuro-semantic-card');
+          }
+        });
+      } catch (e) { }
+    });
+  }
+
+  if (mainContentSelector) {
+    try {
+      const mainEl = document.querySelector(mainContentSelector);
+      if (mainEl) {
+        Array.from(mainEl.children).forEach((child) => {
+          const text = (child.innerText || '').trim();
+          if (text.length > 800 && !child.classList.contains('neuro-semantic-card')) {
+            child.classList.add('neuro-semantic-card');
+          }
+        });
+      }
+    } catch (e) { }
+  }
+
+  semanticArchitectApplied = true;
+}
+
+function clearSemanticArchitectPlan() {
+  document.querySelectorAll('.focus-mode').forEach(el => {
+    el.classList.remove('focus-mode');
+    el.removeAttribute('data-neuro-main');
+  });
+  document.querySelectorAll('.neuro-f-pattern').forEach(el => el.classList.remove('neuro-f-pattern'));
+  document.querySelectorAll('.neuro-semantic-card').forEach(el => el.classList.remove('neuro-semantic-card'));
+  semanticArchitectApplied = false;
 }
 
 async function analyzePageStructure() {
@@ -1810,9 +2407,9 @@ async function analyzePageStructure() {
       throw new Error(response?.error || 'AI analysis failed');
     }
 
-    const { navSelector, mainContentSelector, distractions } = response.data;
-    applyFocusMode(mainContentSelector, distractions);
-    return { navSelector, mainContentSelector, distractions };
+    const { navSelector, mainContentSelector, distractions, fPatternTargets, cardSelectors } = response.data;
+    applySemanticArchitectPlan({ mainContentSelector, distractions, fPatternTargets, cardSelectors });
+    return { navSelector, mainContentSelector, distractions, fPatternTargets, cardSelectors };
   } catch (error) {
     console.warn('analyzePageStructure error:', error);
     return { error: error.message };
@@ -1923,6 +2520,9 @@ function removeDistractions() {
         if (!mainElement || isMainContent(el)) return;
         if (!shouldHideElement(el)) return;
 
+        if (!el.hasAttribute('data-neuro-prev-display')) {
+          el.setAttribute('data-neuro-prev-display', el.style.display || '');
+        }
         el.style.display = 'none';
         el.setAttribute('data-neuro-hidden', 'true');
       });
@@ -1939,8 +2539,24 @@ function hideHighDistractionElements() {
     if (el.hasAttribute('data-neuro-hidden') || isMainContent(el)) return;
     if (!shouldHideElement(el)) return;
 
+    if (!el.hasAttribute('data-neuro-prev-display')) {
+      el.setAttribute('data-neuro-prev-display', el.style.display || '');
+    }
     el.style.display = 'none';
     el.setAttribute('data-neuro-hidden', 'true');
+  });
+}
+
+function restoreDistractions() {
+  document.querySelectorAll('[data-neuro-hidden="true"]').forEach(el => {
+    const prevDisplay = el.getAttribute('data-neuro-prev-display');
+    if (prevDisplay === null) {
+      el.style.display = '';
+    } else {
+      el.style.display = prevDisplay;
+    }
+    el.removeAttribute('data-neuro-hidden');
+    el.removeAttribute('data-neuro-prev-display');
   });
 }
 

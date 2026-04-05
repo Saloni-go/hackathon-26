@@ -523,6 +523,20 @@ chrome.runtime.onInstalled.addListener((details) => {
   });
 
   initializeAnalytics();
+  chrome.alarms.create('neuro_break_reminder', { periodInMinutes: 10 });
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create('neuro_break_reminder', { periodInMinutes: 10 });
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== 'neuro_break_reminder') return;
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tab = tabs?.[0];
+    if (!tab?.id || !tab.url || tab.url.startsWith('chrome://')) return;
+    safeSendMessage(tab.id, { action: 'showMeditationBreak' });
+  });
 });
 
 function initializeAnalytics() {
@@ -854,7 +868,7 @@ async function analyzeDomWithGemini(html) {
       body: JSON.stringify({
         contents: [
           {
-            parts: [{ text: `You are a cognitive accessibility expert. Analyze the provided HTML. Identify the CSS selectors for the most important navigation and the primary reading material. Identify clutter that causes sensory overload. Return ONLY valid JSON.\n\nIdentify the main navigation container, the primary content area, and list any distracting elements like ads or sidebars. Return JSON with keys navSelector, mainContentSelector, distractions (array).\n\nHTML:\n${html}` }]
+            parts: [{ text: `You are a cognitive accessibility expert. Analyze the provided HTML. Identify the CSS selectors for the most important navigation and the primary reading material. Identify clutter that causes sensory overload. Return ONLY valid JSON.\n\nReturn JSON with keys:\n- navSelector: CSS selector for primary navigation\n- mainContentSelector: CSS selector for primary reading area\n- distractions: array of CSS selectors for clutter (ads, sidebars, popups)\n- fPatternTargets: array of CSS selectors for key elements to emphasize in the F-pattern\n- cardSelectors: array of CSS selectors for long unstructured blocks to wrap as cards\n\nKeep selectors short and stable. Return ONLY valid JSON.\n\nHTML:\n${html}` }]
           }
         ]
       })
@@ -1185,6 +1199,35 @@ async function analyzeToneWithAI(text, context) {
   }
 }
 
+async function estimateReadingAgeWithGemini(text) {
+  if (!GEMINI_API_KEY) throw new Error('Missing Gemini API key');
+  const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const prompt = `You are a reading-level assessor. Estimate the reading age for the following text. Return ONLY JSON with keys age and grade.\n\nRules:\n- age: number (approximate reading age in years)\n- grade: number (approximate US grade level)\n- If text is too short, return age 0 and grade 0.\n\nText:\n${text}`;
+
+  const response = await callGeminiWithRetry(() =>
+    runGeminiQueued(() => fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 200, topP: 0.9 }
+      })
+    }))
+  );
+
+  if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
+  const data = await response.json();
+  const raw = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart === -1 || jsonEnd === -1) throw new Error('Gemini did not return JSON');
+  const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+  return {
+    age: Number(parsed.age) || 0,
+    grade: Number(parsed.grade) || 0
+  };
+}
+
 async function simplifyTextBatchWithGemini(texts) {
   if (Date.now() < geminiRateLimitedUntil) throw new Error('Circuit broken');
   if (!GEMINI_API_KEY) throw new Error('No API key');
@@ -1482,6 +1525,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     analyzeToneWithAI(request.text, request.context)
       .then(result => sendResponse({ success: true, tone: result.tone, explanation: result.explanation }))
       .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'estimateReadingAge') {
+    estimateReadingAgeWithGemini(request.text)
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }))
     return true;
   }
 

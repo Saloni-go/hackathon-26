@@ -303,6 +303,23 @@
         </div>
       </div>
 
+      <div class="settings-grid">
+        <div class="setting-tile vertical">
+          <label for="speechMode" class="field-label">🔊 Text to Speech</label>
+          <select id="speechMode">
+            <option value="page">Whole page</option>
+            <option value="heading">Headings on the page</option>
+            <option value="selection">Selected range only</option>
+          </select>
+          <select id="speechHeading" style="margin-top:8px;"></select>
+          <div class="helper-text">Select text on the page to use “Selected range only”.</div>
+          <div style="display:flex; gap:8px; margin-top:10px;">
+            <button id="speechPlay" class="btn-primary" style="flex:1;">▶ Speak</button>
+            <button id="speechStop" class="btn-secondary" style="flex:1;">⏹ Stop</button>
+          </div>
+        </div>
+      </div>
+
       <div class="button-stack">
         <button id="saveBtn" class="btn-primary wide-btn">💾 Save All Settings</button>
         <button id="resetBtn" class="btn-secondary wide-btn">↺ Reset to Defaults</button>

@@ -23,6 +23,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const themeModeSelect = document.getElementById('themeMode');
   const themePaletteSelect = document.getElementById('themePalette');
   const themePaletteHint = document.getElementById('themePaletteHint');
+  const speechModeSelect = document.getElementById('speechMode');
+  const speechHeadingSelect = document.getElementById('speechHeading');
+  const speechPlayBtn = document.getElementById('speechPlay');
+  const speechStopBtn = document.getElementById('speechStop');
   
   // Sliders
   const adhdSlider = document.getElementById('adhdSlider');
@@ -271,6 +275,48 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  function sendSpeechCommand(payload) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs.length > 0 && tabs[0].id && tabs[0].url && !tabs[0].url.startsWith('chrome://')) {
+        safeSendToTab(tabs[0].id, payload);
+      } else {
+        showStatus('No active web page to speak', true);
+      }
+    });
+  }
+
+  function requestHeadings() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (!tabs || tabs.length === 0 || !tabs[0].id || !tabs[0].url || tabs[0].url.startsWith('chrome://')) {
+        if (speechHeadingSelect) {
+          speechHeadingSelect.innerHTML = '<option value="">No headings available</option>';
+          speechHeadingSelect.disabled = true;
+        }
+        return;
+      }
+      chrome.tabs.sendMessage(tabs[0].id, { action: 'getHeadings' }, (response) => {
+        if (chrome.runtime.lastError || !response?.success || !Array.isArray(response.headings)) {
+          if (speechHeadingSelect) {
+            speechHeadingSelect.innerHTML = '<option value="">No headings available</option>';
+            speechHeadingSelect.disabled = true;
+          }
+          return;
+        }
+        const headings = response.headings;
+        if (!speechHeadingSelect) return;
+        if (headings.length === 0) {
+          speechHeadingSelect.innerHTML = '<option value="">No headings available</option>';
+          speechHeadingSelect.disabled = true;
+          return;
+        }
+        speechHeadingSelect.disabled = false;
+        speechHeadingSelect.innerHTML = headings
+          .map((heading) => `<option value="${heading.id}">${heading.label}</option>`)
+          .join('');
+      });
+    });
+  }
   
  function applySettingsToTab(settings) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -332,6 +378,31 @@ document.addEventListener('DOMContentLoaded', () => {
     themePaletteSelect.addEventListener('change', () => {
       updatePaletteHint(themePaletteSelect.value);
     });
+  }
+
+  if (speechModeSelect && speechHeadingSelect) {
+    const toggleHeadingSelect = () => {
+      const needsHeading = speechModeSelect.value === 'heading';
+      speechHeadingSelect.disabled = !needsHeading;
+      speechHeadingSelect.style.display = needsHeading ? 'block' : 'none';
+      if (needsHeading) requestHeadings();
+    };
+    speechModeSelect.addEventListener('change', toggleHeadingSelect);
+    toggleHeadingSelect();
+  }
+
+  if (speechPlayBtn) {
+    speechPlayBtn.onclick = () => {
+      const mode = speechModeSelect ? speechModeSelect.value : 'page';
+      const headingId = speechHeadingSelect ? speechHeadingSelect.value : '';
+      sendSpeechCommand({ action: 'speakText', mode, headingId: headingId || null });
+    };
+  }
+
+  if (speechStopBtn) {
+    speechStopBtn.onclick = () => {
+      sendSpeechCommand({ action: 'stopSpeech' });
+    };
   }
   
   // START BUTTON
