@@ -1,6 +1,8 @@
 # GOOGLE BIG CODE
 ## Neuro-Inclusive Web (Hackathon-26)
 
+Github URL: https://github.com/Saloni-go/hackathon-26/tree/main
+
 AI-powered cognitive accessibility Chrome extension for ADHD, Autism, and Dyslexia. Includes real-time page adaptations, text simplification, cross‑tab analysis, and game-based screening to auto‑tune accessibility settings.
 
 ## Tech Stack
