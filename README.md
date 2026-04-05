@@ -16,6 +16,24 @@ AI-powered cognitive accessibility Chrome extension for ADHD, Autism, and Dyslex
 - **Caching Layer:** LRU caches with TTLs for jargon explanations, helper outputs, and AI responses.
 - **Local Fallbacks:** Heuristic simplification and tone inference when AI is unavailable.
 
+## Data Structures, Algorithms & Optimizations
+### Data Structures Used
+- **Fast Queue (array-backed):** Serialized Gemini calls to avoid burst rate‑limits and smooth throughput.
+- **LRU Cache (Map + recency order):** Stores hot AI results, jargon definitions, and helper responses with TTL expiration.
+- **`Map` / `Set`:** Used for quick membership checks (e.g., visited nodes, cached words, selected tabs).
+- **Priority Queue (custom):** Ranks candidate content nodes by heuristic score for main‑content detection.
+- **Hashing (simple hash keys):** Normalizes large inputs into cache keys for fast lookup.
+- **Arrays + slicing:** Paragraph batching, chunked TTS segments, and batched DOM updates.
+- **Record objects (plain JS objects):** Feature flags, learned preferences, and stored settings profiles.
+
+### Algorithms & Efficiency Notes
+- **LRU + TTL eviction:** Prevents unbounded memory growth while keeping frequent results hot.
+- **Cosine similarity ranking:** Embedding-based paragraph relevance for RAG‑style retrieval.
+- **Token overlap scoring:** Lightweight fallback when embeddings aren’t available.
+- **Debounced/batched observers:** Reduces reflow/paint cost on mutation‑heavy pages.
+- **Main‑content heuristics:** Minimizes noise by scoring likely primary content blocks.
+- **Speech chunking:** Prevents long‑form TTS failures and keeps playback responsive.
+
 ## Tools & Frameworks
 - Chrome Extensions APIs (MV3 service worker + content scripts)
 - Web Speech API (`speechSynthesis`, `SpeechRecognition` when available)
@@ -27,6 +45,16 @@ AI-powered cognitive accessibility Chrome extension for ADHD, Autism, and Dyslex
 - CSS
 
 ## Setup
+
+### Requirements
+- Node.js 18+ (for `npm run build:config`)
+- Chrome or Chromium‑based browser
+
+### Files to Create
+Create these local files (not committed to git):
+
+- `.env` — your API keys (copy from `.env.example`)
+- `config.js` — generated from `.env` using the build script
 
 ### 1) Configure API keys
 This extension reads Gemini + Hugging Face keys from a generated `config.js` file.
@@ -41,7 +69,27 @@ Edit `.env` with your keys, then generate `config.js`:
 npm run build:config
 ```
 
-### 2) Load the extension in Chrome
+### 2) Generate `config.js`
+Run this whenever you change `.env`:
+
+```bash
+npm run build:config
+```
+
+This creates `config.js` in the project root with all environment values embedded:
+
+```js
+// Auto-generated from .env. Do not edit directly.
+self.__ENV = {
+	HF_API_TOKEN: "...",
+	HF_API_URL: "...",
+	GEMINI_API_KEY: "...",
+	GEMINI_MODEL: "...",
+	GEMINI_API_URL: "..."
+};
+```
+
+### 3) Load the extension in Chrome
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked** and select the `hackathon-26/` folder.
