@@ -302,6 +302,25 @@
           <h2>Actions</h2>
         </div>
       </div>
+        <div class="section-card" style="margin-top: 12px;">
+          <div class="section-title-row">
+            <div>
+              <div class="section-kicker">Cross-tab AI</div>
+              <h2>Compare Open Tabs</h2>
+            </div>
+          </div>
+          <div id="tabList" class="recommendation-list" style="max-height: 160px; overflow: auto;"></div>
+          <div style="display:flex; gap:8px; margin-top:6px;">
+            <button id="tabSelectAll" class="btn-secondary" style="flex:1;">Select All</button>
+            <button id="tabSelectNone" class="btn-secondary" style="flex:1;">Select None</button>
+          </div>
+          <textarea id="tabQuery" placeholder="Ask a question about selected tabs..." style="width:100%; min-height:70px; margin-top:8px; border-radius:10px; padding:8px; background:#0f0f1a; color:#eee; border:1px solid rgba(255,255,255,0.08);"></textarea>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button id="tabRefresh" class="btn-secondary" style="flex:1;">↻ Refresh Tabs</button>
+            <button id="tabAnalyze" class="btn-primary" style="flex:1;">✨ Analyze</button>
+          </div>
+          <div id="tabResult" class="status" style="text-align:left; margin-top:8px;"></div>
+        </div>
 
       <div class="settings-grid">
         <div class="setting-tile vertical">

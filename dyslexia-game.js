@@ -720,16 +720,115 @@ const games = [
 
 // Add 4 additional challenges
 const extraChallenges = [
-  { title: "🔊 Reading Aloud Test", instruction: "Read this sentence aloud clearly", text: "The quick brown fox jumps over the lazy dog.", type: "speech" },
+  { title: "✍️ Writing Accuracy Test", instruction: "Type the sentence exactly as shown", text: "The quick brown fox jumps over the lazy dog.", type: "writing" },
   { title: "✍️ Spelling Test", instruction: "Type the word you hear (AI will check)", text: "beautiful", type: "spelling" },
   { title: "📝 Message Memory", instruction: "Remember this phone number", text: "555-1234", type: "recall" },
   { title: "📋 Multiple Instructions", instruction: "Follow these 3 steps in order", steps: ["Tap your head", "Clap once", "Say 'Done'"], type: "instructions" }
 ];
 
-for (let i = 0; i < extraChallenges.length; i++) {
-  const challenge = extraChallenges[i];
+function normalizeInput(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function scoreTextMatch(expected, input) {
+  const expectedWords = normalizeInput(expected).split(' ').filter(Boolean);
+  const inputWords = new Set(normalizeInput(input).split(' ').filter(Boolean));
+  if (!expectedWords.length) return 0;
+  let matches = 0;
+  expectedWords.forEach(word => {
+    if (inputWords.has(word)) matches++;
+  });
+  return matches / expectedWords.length;
+}
+
+function levenshteinDistance(a, b) {
+  const s = normalizeInput(a);
+  const t = normalizeInput(b);
+  if (!s && !t) return 0;
+  const rows = s.length + 1;
+  const cols = t.length + 1;
+  const matrix = Array.from({ length: rows }, () => new Array(cols).fill(0));
+  for (let i = 0; i < rows; i++) matrix[i][0] = i;
+  for (let j = 0; j < cols; j++) matrix[0][j] = j;
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return matrix[rows - 1][cols - 1];
+}
+
+function calculateAccuracyPercentage(expected, input) {
+  const source = normalizeInput(expected);
+  const typed = normalizeInput(input);
+  if (!source) return 0;
+  if (!typed) return 0;
+  const distance = levenshteinDistance(source, typed);
+  const maxLen = Math.max(source.length, typed.length, 1);
+  const ratio = Math.max(0, 1 - distance / maxLen);
+  return Math.round(ratio * 100);
+}
+
+function evaluateExtraChallenge(challenge, inputValue) {
+  if (challenge.type === 'spelling') {
+    const percentage = calculateAccuracyPercentage(challenge.text, inputValue);
+    let score = 0;
+    let judgment = '';
+    if (percentage >= 90) {
+      score = 3;
+      judgment = `✅ Good: ${percentage}% accuracy`;
+    } else if (percentage >= 70) {
+      score = 2;
+      judgment = `🟡 Okay: ${percentage}% accuracy`;
+    } else if (percentage >= 50) {
+      score = 1;
+      judgment = `❌ Bad: ${percentage}% accuracy`;
+    } else {
+      score = 0;
+      judgment = `❌ Bad: ${percentage}% accuracy`;
+    }
+    return { score, judgment };
+  }
+
+  if (challenge.type === 'recall') {
+    const expectedDigits = String(challenge.text || '').replace(/\D/g, '');
+    const actualDigits = String(inputValue || '').replace(/\D/g, '');
+    const correct = expectedDigits === actualDigits;
+    return {
+      score: correct ? 3 : actualDigits.length >= Math.max(1, expectedDigits.length - 2) ? 1 : 0,
+      judgment: correct ? '✅ Good: recalled the number' : '❌ Bad: number mismatch'
+    };
+  }
+
+  if (challenge.type === 'instructions') {
+    const expected = (challenge.steps || []).join(' ');
+    const ratio = scoreTextMatch(expected, inputValue);
+    if (ratio >= 0.8) return { score: 3, judgment: '✅ Good: steps recalled accurately' };
+    if (ratio >= 0.5) return { score: 2, judgment: '🟡 Okay: partial recall of steps' };
+    return { score: 0, judgment: '❌ Bad: steps not recalled well' };
+  }
+
+  const ratio = scoreTextMatch(challenge.text || '', inputValue);
+  const percentage = Math.round(ratio * 100);
+  if (ratio >= 0.8) return { score: 3, judgment: `✅ Good: ${percentage}% accuracy` };
+  if (ratio >= 0.5) return { score: 2, judgment: `🟡 Okay: ${percentage}% accuracy` };
+  return { score: 0, judgment: `❌ Bad: ${percentage}% accuracy` };
+}
+
+extraChallenges.forEach((challenge, index) => {
+  const lockedIndex = 6 + index;
+
   games.push({
-    id: 7 + i,
+    id: 7 + index,
     title: challenge.title,
     instruction: challenge.instruction,
     question: `Testing ${challenge.type}`,
@@ -737,24 +836,67 @@ for (let i = 0; i < extraChallenges.length; i++) {
     render: () => `
       <div style="text-align: center; padding: 20px;">
         <div style="font-size: 24px; margin: 20px; background: #1a1a2e; padding: 30px; border-radius: 20px;">
-          ${challenge.type === 'spelling' ? '🔊 Type: "' + challenge.text + '"' : 
+          ${challenge.type === 'spelling' ? '🎤 Click to hear the word' : 
             challenge.type === 'recall' ? '📞 Remember: ' + challenge.text : 
             challenge.type === 'instructions' ? challenge.steps.map((s, i) => `${i+1}. ${s}`).join('<br>') :
             '📖 "' + challenge.text + '"'}
         </div>
-        <div class="response-buttons">
-          <button class="response-btn" data-value="3">✅ Completed easily</button>
-          <button class="response-btn" data-value="2">🟡 Completed with effort</button>
-          <button class="response-btn" data-value="1">🟠 Difficult but did it</button>
-          <button class="response-btn" data-value="0">❌ Could not complete</button>
-        </div>
+        ${challenge.type === 'spelling' ? '<button id="playWord" class="response-btn" style="margin-bottom:10px;">🎤 Play Word</button>' : ''}
+        <input id="extraInput" class="math-input" placeholder="Type your answer here" style="width:100%;" />
+        <button id="submitExtra" class="response-btn" style="margin-top:10px;">Check Answer</button>
+        <div class="feedback" id="extraFeedback"></div>
       </div>
     `,
     init: () => {
-      // For self-reported challenges
+      const input = document.getElementById('extraInput');
+      const submit = document.getElementById('submitExtra');
+      const feedback = document.getElementById('extraFeedback');
+      const playWord = document.getElementById('playWord');
+
+      if (playWord && challenge.type === 'spelling') {
+        playWord.onclick = (event) => {
+          event.preventDefault();
+          try {
+            const synth = window.speechSynthesis;
+            if (!synth) {
+              if (feedback) feedback.textContent = 'Speech not supported in this browser.';
+              return;
+            }
+            const utterance = new SpeechSynthesisUtterance(challenge.text || '');
+            utterance.rate = 0.8;
+            utterance.pitch = 1.0;
+            const voices = synth.getVoices();
+            if (voices && voices.length) {
+              utterance.voice = voices.find(v => v.lang?.includes('en')) || voices[0];
+            }
+            synth.cancel();
+            synth.speak(utterance);
+            if (feedback) feedback.textContent = '🔊 Playing word...';
+          } catch (error) {
+            if (feedback) feedback.textContent = 'Could not play audio.';
+          }
+        };
+      }
+
+      if (submit) {
+        submit.onclick = () => {
+          const value = input?.value || '';
+          const result = evaluateExtraChallenge(challenge, value);
+          scores[lockedIndex] = result.score;
+          gameResults[lockedIndex] = { score: result.score, input: value, judgment: result.judgment };
+          if (feedback) {
+            feedback.textContent = result.judgment;
+            feedback.style.color = result.score >= 2 ? '#00b894' : '#fdcb6e';
+          }
+          if (submit) submit.disabled = true;
+          if (input) input.disabled = true;
+          const nextBtn = document.getElementById('nextBtn');
+          if (nextBtn) nextBtn.style.display = 'block';
+        };
+      }
     }
   });
-}
+});
 
 function renderGame() {
   const container = document.getElementById('gameContent');
@@ -787,8 +929,8 @@ function renderGame() {
   if (currentGame.init) currentGame.init();
   
   // For games that don't auto-detect completion, add manual response buttons
-  if (!['direction', 'map', 'reading', 'letter', 'memory', 'math'].includes(currentGame.type)) {
-    document.querySelectorAll('.response-btn').forEach(btn => {
+  if (!['direction', 'map', 'reading', 'letter', 'memory', 'math', 'writing', 'spelling'].includes(currentGame.type)) {
+    document.querySelectorAll('.response-btn[data-value]').forEach(btn => {
       btn.onclick = () => {
         const value = parseInt(btn.dataset.value);
         if (!isNaN(value)) {
@@ -809,6 +951,8 @@ function renderGame() {
       if (scores[currentGameIndex] !== undefined) {
         currentGameIndex++;
         renderGame();
+      } else {
+        alert('Please complete the challenge first!');
       }
     };
   }

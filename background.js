@@ -1,6 +1,57 @@
 // background.js - Service worker with Safe Messaging
 console.log('Neuro-Inclusive Web service worker started');
 
+// ========== LOCAL RAG EMBEDDINGS (XENOVA) ==========
+let embeddingPipelinePromise = null;
+
+async function getEmbeddingPipeline() {
+  if (!embeddingPipelinePromise) {
+    if (typeof self.pipeline !== 'function') {
+      throw new Error('Embedding pipeline unavailable. Bundle @xenova/transformers and expose pipeline in the service worker.');
+    }
+    embeddingPipelinePromise = self.pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2')
+      .catch((error) => {
+        console.error('Embedding model failed to load:', error);
+        embeddingPipelinePromise = null;
+        throw error;
+      });
+  }
+  return embeddingPipelinePromise;
+}
+
+async function getEmbedding(text) {
+  try {
+    const embedder = await getEmbeddingPipeline();
+    const output = await embedder(text, { pooling: 'mean', normalize: true });
+    const vector = output?.data || output?.[0]?.data || output;
+    if (!vector || !Array.isArray(vector) && !(vector instanceof Float32Array)) {
+      throw new Error('Embedding output missing vector');
+    }
+    return Array.from(vector);
+  } catch (error) {
+    console.error('getEmbedding failed:', error);
+    throw error;
+  }
+}
+
+function computeSimilarity(vectorA, vectorB) {
+  if (!Array.isArray(vectorA) || !Array.isArray(vectorB) || vectorA.length !== vectorB.length) {
+    throw new Error('Vectors must be arrays of equal length');
+  }
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < vectorA.length; i++) {
+    const a = vectorA[i];
+    const b = vectorB[i];
+    dot += a * b;
+    normA += a * a;
+    normB += b * b;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 // ========== SAFE MESSAGING UTILITY ==========
 
 function safeSendMessage(tabId, message, callback) {
@@ -1199,6 +1250,50 @@ async function analyzeToneWithAI(text, context) {
   }
 }
 
+function splitIntoParagraphs(text) {
+  if (!text) return [];
+  const raw = String(text).trim();
+  if (!raw) return [];
+  const hasNewlines = raw.includes('\n');
+  let parts = hasNewlines
+    ? raw.split(/\n+/)
+    : raw.split(/(?<=[.!?])\s+/);
+  parts = parts.map(part => part.trim()).filter(part => part.length > 60);
+  if (parts.length > 0) return parts;
+  const fallback = raw.match(/.{1,350}(?:\s+|$)/g) || [];
+  return fallback.map(part => part.trim()).filter(part => part.length > 60);
+}
+
+async function analyzeTabsWithGemini(paragraphs, query) {
+  if (!GEMINI_API_KEY) throw new Error('Missing Gemini API key');
+  const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const prompt = `You are an assistant comparing multiple web pages for a user. Use the summaries below to answer the user's query. Be concise and include similarities/differences and a recommendation when asked.
+
+User query:
+${query}
+
+Relevant paragraphs:
+${paragraphs.map((item, index) => `#${index + 1} ${item.title}\nURL: ${item.url}\nParagraph: ${item.text}`).join('\n\n')}
+
+Return plain text only.`;
+
+  const response = await callGeminiWithRetry(() =>
+    runGeminiQueued(() => fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 500, topP: 0.9 }
+      })
+    }))
+  );
+
+  if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
+  const data = await response.json();
+  const raw = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+  return raw.trim() || 'No response.';
+}
+
 async function estimateReadingAgeWithGemini(text) {
   if (!GEMINI_API_KEY) throw new Error('Missing Gemini API key');
   const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
@@ -1558,6 +1653,106 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     applyLearnedPreferences(request.hostname, request.pageCategory, request.currentSettings)
       .then(overrides => sendResponse({ success: true, overrides }))
       .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'getOpenTabs') {
+    chrome.tabs.query({}, (tabs) => {
+      const results = (tabs || [])
+        .filter(tab => tab.url && !tab.url.startsWith('chrome://'))
+        .map(tab => ({ id: tab.id, title: tab.title, url: tab.url }));
+      sendResponse({ success: true, tabs: results });
+    });
+    return true;
+  }
+
+  if (request.action === 'analyzeTabs') {
+    const tabIds = Array.isArray(request.tabIds) ? request.tabIds : [];
+    const query = String(request.query || '').trim();
+    if (tabIds.length === 0 || !query) {
+      sendResponse({ success: false, error: 'Missing tabs or query.' });
+      return true;
+    }
+
+    const summaryPromises = tabIds.map((tabId) => new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(null), 2000);
+      chrome.tabs.sendMessage(tabId, { action: 'getTabSummary' }, (response) => {
+        clearTimeout(timeout);
+        if (chrome.runtime.lastError || !response?.success) {
+          console.warn(`Tab ${tabId} failed to respond.`);
+          resolve(null);
+        } else {
+          resolve(response.summary);
+        }
+      });
+    }));
+
+    Promise.all(summaryPromises).then(async (summaries) => {
+      const validSummaries = summaries.filter(Boolean);
+
+      if (validSummaries.length === 0) {
+        sendResponse({ success: false, error: 'None of the selected tabs are responding. Please refresh them.' });
+        return;
+      }
+
+      try {
+        const queryVector = await getEmbedding(query);
+        const paragraphItems = [];
+
+        validSummaries.forEach((summary) => {
+          const paragraphs = splitIntoParagraphs(summary.text || '');
+          paragraphs.forEach((paragraph) => {
+            paragraphItems.push({
+              title: summary.title,
+              url: summary.url,
+              text: paragraph
+            });
+          });
+        });
+
+        if (paragraphItems.length === 0) {
+          sendResponse({ success: false, error: 'No usable text found in selected tabs.' });
+          return;
+        }
+
+        const scored = await Promise.all(paragraphItems.map(async (item) => {
+          const vector = await getEmbedding(item.text);
+          const score = computeSimilarity(queryVector, vector);
+          return { ...item, score };
+        }));
+
+        scored.sort((a, b) => b.score - a.score);
+        const topParagraphs = scored.slice(0, 5);
+
+        const answer = await analyzeTabsWithGemini(topParagraphs, query);
+        sendResponse({ success: true, answer });
+      } catch (error) {
+        console.warn('RAG unavailable, falling back to heuristic paragraphs:', error);
+        const fallbackParagraphs = [];
+        validSummaries.forEach((summary) => {
+          const paragraphs = splitIntoParagraphs(summary.text || '');
+          paragraphs.slice(0, 2).forEach((paragraph) => {
+            fallbackParagraphs.push({
+              title: summary.title,
+              url: summary.url,
+              text: paragraph
+            });
+          });
+        });
+        const topParagraphs = fallbackParagraphs.slice(0, 5);
+        if (topParagraphs.length === 0) {
+          sendResponse({ success: false, error: 'No usable text found in selected tabs.' });
+          return;
+        }
+        try {
+          const answer = await analyzeTabsWithGemini(topParagraphs, query);
+          sendResponse({ success: true, answer });
+        } catch (geminiError) {
+          sendResponse({ success: false, error: geminiError.message });
+        }
+      }
+    });
+
     return true;
   }
 

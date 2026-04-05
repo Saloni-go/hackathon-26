@@ -76,16 +76,16 @@ const games = [
               
               if (completionTime < 15) {
                 score = 3;
-                judgment = '🏆 Excellent focus! Completed all steps quickly!';
+                judgment = '✅ Good: completed all steps quickly';
               } else if (completionTime < 30) {
                 score = 2;
-                judgment = '👍 Good completion time';
+                judgment = '🟡 Okay: completion time was moderate';
               } else if (completionTime < 60) {
                 score = 1;
-                judgment = '🤔 Took longer than average to complete';
+                judgment = '❌ Bad: took longer than average';
               } else {
                 score = 0;
-                judgment = '⚠️ Significant difficulty with task completion (common with ADHD)';
+                judgment = '❌ Bad: significant difficulty with task completion';
               }
               
               scores[currentGameIndex] = score;
@@ -109,12 +109,12 @@ const games = [
     render: () => `
       <div class="org-game">
         <div class="sort-items" id="sortItems">
-          <div class="sort-item" data-category="work">📄 Report</div>
-          <div class="sort-item" data-category="personal">🏠 Grocery list</div>
-          <div class="sort-item" data-category="work">📊 Spreadsheet</div>
-          <div class="sort-item" data-category="personal">📅 Birthday reminder</div>
-          <div class="sort-item" data-category="work">📧 Email draft</div>
-          <div class="sort-item" data-category="personal">💡 Personal idea</div>
+          <div class="sort-item" data-category="work" draggable="true">📄 Report</div>
+          <div class="sort-item" data-category="personal" draggable="true">🏠 Grocery list</div>
+          <div class="sort-item" data-category="work" draggable="true">📊 Spreadsheet</div>
+          <div class="sort-item" data-category="personal" draggable="true">📅 Birthday reminder</div>
+          <div class="sort-item" data-category="work" draggable="true">📧 Email draft</div>
+          <div class="sort-item" data-category="personal" draggable="true">💡 Personal idea</div>
         </div>
         <div class="sort-zones">
           <div class="sort-zone" data-zone="work">💼 WORK</div>
@@ -130,73 +130,106 @@ const games = [
       const totalItems = 6;
       const feedback = document.getElementById('orgFeedback');
       
+      const markPlacement = (item, selectedZone) => {
+        const expectedCategory = item.dataset.category;
+        if (expectedCategory === selectedZone) {
+          item.classList.add('placed');
+          item.style.background = '#00b894';
+          item.setAttribute('draggable', 'false');
+          placedItems++;
+          feedback.innerHTML = '✅ Correct!';
+          feedback.style.color = '#00b894';
+        } else {
+          mistakes++;
+          feedback.innerHTML = '❌ Wrong category!';
+          feedback.style.color = '#e74c3c';
+          setTimeout(() => {
+            if (feedback) feedback.innerHTML = '';
+          }, 1000);
+        }
+
+        if (placedItems === totalItems) {
+          const completionTime = (Date.now() - startTime) / 1000;
+          const accuracy = ((totalItems - mistakes) / totalItems) * 100;
+
+          let score = 0;
+          let judgment = '';
+
+          if (accuracy === 100 && completionTime < 20) {
+            score = 3;
+            judgment = '✅ Good: excellent organizational skills';
+          } else if (accuracy >= 80 && completionTime < 40) {
+            score = 2;
+            judgment = '🟡 Okay: good organization ability';
+          } else if (accuracy >= 60) {
+            score = 1;
+            judgment = '❌ Bad: below average organization';
+          } else {
+            score = 0;
+            judgment = '❌ Bad: significant difficulty with organization';
+          }
+
+          scores[currentGameIndex] = score;
+          gameResults[currentGameIndex] = { score, accuracy, mistakes, judgment };
+
+          feedback.innerHTML = `${judgment}<br>📊 ${Math.round(accuracy)}% accuracy | ${mistakes} mistakes`;
+          feedback.style.color = score >= 2 ? '#00b894' : '#fdcb6e';
+          document.getElementById('nextBtn').style.display = 'block';
+        }
+      };
+
       document.querySelectorAll('.sort-item').forEach(item => {
         let isPlaced = false;
-        
+
+        item.addEventListener('dragstart', (event) => {
+          if (isPlaced || item.classList.contains('placed')) {
+            event.preventDefault();
+            return;
+          }
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', item.dataset.category || '');
+          item.classList.add('dragging');
+        });
+
+        item.addEventListener('dragend', () => {
+          item.classList.remove('dragging');
+        });
+
         item.onclick = () => {
-          if (isPlaced) return;
-          
-          // Highlight to show which zone to drag to
+          if (isPlaced || item.classList.contains('placed')) return;
           const zones = document.querySelectorAll('.sort-zone');
           zones.forEach(zone => {
             zone.style.transform = 'scale(1.02)';
             setTimeout(() => zone.style.transform = '', 300);
           });
         };
-        
-        // Simple click-to-zone logic (since drag-drop is complex)
+
         document.querySelectorAll('.sort-zone').forEach(zone => {
           zone.onclick = () => {
-            if (isPlaced) return;
-            
-            const expectedCategory = item.dataset.category;
-            const selectedZone = zone.dataset.zone;
-            
-            if (expectedCategory === selectedZone) {
-              item.classList.add('placed');
-              item.style.background = '#00b894';
-              placedItems++;
-              isPlaced = true;
-              feedback.innerHTML = '✅ Correct!';
-              feedback.style.color = '#00b894';
-            } else {
-              mistakes++;
-              feedback.innerHTML = '❌ Wrong category!';
-              feedback.style.color = '#e74c3c';
-              setTimeout(() => {
-                if (feedback) feedback.innerHTML = '';
-              }, 1000);
-            }
-            
-            if (placedItems === totalItems) {
-              const completionTime = (Date.now() - startTime) / 1000;
-              const accuracy = ((totalItems - mistakes) / totalItems) * 100;
-              
-              let score = 0;
-              let judgment = '';
-              
-              if (accuracy === 100 && completionTime < 20) {
-                score = 3;
-                judgment = '🏆 Excellent organizational skills!';
-              } else if (accuracy >= 80 && completionTime < 40) {
-                score = 2;
-                judgment = '👍 Good organization ability';
-              } else if (accuracy >= 60) {
-                score = 1;
-                judgment = '🤔 Below average organization';
-              } else {
-                score = 0;
-                judgment = '⚠️ Significant difficulty with organization (common with ADHD)';
-              }
-              
-              scores[currentGameIndex] = score;
-              gameResults[currentGameIndex] = { score, accuracy, mistakes, judgment };
-              
-              feedback.innerHTML = `${judgment}<br>📊 ${Math.round(accuracy)}% accuracy | ${mistakes} mistakes`;
-              feedback.style.color = score >= 2 ? '#00b894' : '#fdcb6e';
-              document.getElementById('nextBtn').style.display = 'block';
-            }
+            if (isPlaced || item.classList.contains('placed')) return;
+            markPlacement(item, zone.dataset.zone);
+            if (item.classList.contains('placed')) isPlaced = true;
           };
+        });
+      });
+
+      document.querySelectorAll('.sort-zone').forEach(zone => {
+        zone.addEventListener('dragover', (event) => {
+          event.preventDefault();
+          zone.style.transform = 'scale(1.03)';
+        });
+
+        zone.addEventListener('dragleave', () => {
+          zone.style.transform = '';
+        });
+
+        zone.addEventListener('drop', (event) => {
+          event.preventDefault();
+          zone.style.transform = '';
+          const dragged = document.querySelector('.sort-item.dragging');
+          if (!dragged || dragged.classList.contains('placed')) return;
+          markPlacement(dragged, zone.dataset.zone);
+          dragged.classList.remove('dragging');
         });
       });
     }
@@ -264,16 +297,16 @@ const games = [
         
         if (accuracy >= 80 && recallTime < 30) {
           score = 3;
-          judgment = '🏆 Excellent memory for appointments!';
+          judgment = '✅ Good: excellent memory for appointments';
         } else if (accuracy >= 60) {
           score = 2;
-          judgment = '👍 Good memory recall';
+          judgment = '🟡 Okay: good memory recall';
         } else if (accuracy >= 40) {
           score = 1;
-          judgment = '🤔 Below average memory for obligations';
+          judgment = '❌ Bad: below average memory for obligations';
         } else {
           score = 0;
-          judgment = '⚠️ Significant difficulty remembering appointments (common with ADHD)';
+          judgment = '❌ Bad: significant difficulty remembering appointments';
         }
         
         scores[currentGameIndex] = score;
@@ -362,16 +395,16 @@ const games = [
         
         if (distractionCount === 0 && wordCount >= 100 && completionTime < 180) {
           score = 3;
-          judgment = '🏆 Excellent focus! No distractions!';
+          judgment = '✅ Good: excellent focus with no distractions';
         } else if (distractionCount <= 1 && wordCount >= 80) {
           score = 2;
-          judgment = '👍 Good task completion with minimal distractions';
+          judgment = '🟡 Okay: good completion with minimal distractions';
         } else if (distractionCount <= 3 && wordCount >= 60) {
           score = 1;
-          judgment = '🤔 Moderate procrastination detected';
+          judgment = '❌ Bad: moderate procrastination detected';
         } else {
           score = 0;
-          judgment = '⚠️ High procrastination and task avoidance (common with ADHD)';
+          judgment = '❌ Bad: high procrastination and task avoidance';
         }
         
         scores[currentGameIndex] = score;
@@ -441,16 +474,16 @@ const games = [
           
           if (totalMovement < 500 && movementsPerSecond < 2) {
             score = 3;
-            judgment = '🏆 Excellent stillness! No fidgeting detected.';
+            judgment = '✅ Good: excellent stillness';
           } else if (totalMovement < 2000 && movementsPerSecond < 5) {
             score = 2;
-            judgment = '👍 Mild fidgeting, within normal range';
+            judgment = '🟡 Okay: mild fidgeting';
           } else if (totalMovement < 5000) {
             score = 1;
-            judgment = '🤔 Moderate fidgeting detected';
+            judgment = '❌ Bad: moderate fidgeting detected';
           } else {
             score = 0;
-            judgment = '⚠️ High fidgeting/hyperactivity detected (common with ADHD)';
+            judgment = '❌ Bad: high fidgeting/hyperactivity detected';
           }
           
           scores[currentGameIndex] = score;
@@ -508,16 +541,16 @@ const games = [
           
           if (avgReaction < 300 && prematureClicks === 0) {
             score = 3;
-            judgment = '🏆 Excellent impulse control and fast reactions!';
+            judgment = '✅ Good: excellent impulse control';
           } else if (avgReaction < 500 && prematureClicks <= 1) {
             score = 2;
-            judgment = '👍 Good reaction time, mild impulsivity';
+            judgment = '🟡 Okay: good reaction time with mild impulsivity';
           } else if (avgReaction < 800 || prematureClicks <= 3) {
             score = 1;
-            judgment = '🤔 Below average impulse control';
+            judgment = '❌ Bad: below average impulse control';
           } else {
             score = 0;
-            judgment = '⚠️ High impulsivity/hyperactivity detected (common with ADHD)';
+            judgment = '❌ Bad: high impulsivity/hyperactivity detected';
           }
           
           scores[currentGameIndex] = score;

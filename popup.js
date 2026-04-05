@@ -27,6 +27,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const speechHeadingSelect = document.getElementById('speechHeading');
   const speechPlayBtn = document.getElementById('speechPlay');
   const speechStopBtn = document.getElementById('speechStop');
+  const tabList = document.getElementById('tabList');
+  const tabQuery = document.getElementById('tabQuery');
+  const tabRefresh = document.getElementById('tabRefresh');
+  const tabAnalyze = document.getElementById('tabAnalyze');
+  const tabResult = document.getElementById('tabResult');
+  const tabSelectAll = document.getElementById('tabSelectAll');
+  const tabSelectNone = document.getElementById('tabSelectNone');
   
   // Sliders
   const adhdSlider = document.getElementById('adhdSlider');
@@ -317,6 +324,47 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   }
+
+  function renderTabList(tabs) {
+    if (!tabList) return;
+    if (!Array.isArray(tabs) || tabs.length === 0) {
+      tabList.innerHTML = '<div class="status">No tabs found.</div>';
+      return;
+    }
+    tabList.innerHTML = tabs.map(tab => `
+      <label class="setting-tile tab-item" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" class="tab-select" value="${tab.id}" checked />
+        <div style="font-size:12px;">${tab.title || tab.url}</div>
+      </label>
+    `).join('');
+  }
+
+  function refreshTabs() {
+    chrome.runtime.sendMessage({ action: 'getOpenTabs' }, (response) => {
+      if (chrome.runtime.lastError || !response?.success) {
+        chrome.tabs.query({}, (tabs) => {
+          const results = (tabs || [])
+            .filter(tab => tab.url && !tab.url.startsWith('chrome://'))
+            .map(tab => ({ id: tab.id, title: tab.title, url: tab.url }));
+          if (results.length === 0) {
+            if (tabList) tabList.innerHTML = '<div class="status">Could not load tabs.</div>';
+            return;
+          }
+          renderTabList(results);
+        });
+        return;
+      }
+      renderTabList(response.tabs || []);
+    });
+  }
+
+  function getSelectedTabIds() {
+    if (!tabList) return [];
+    return Array.from(tabList.querySelectorAll('.tab-select'))
+      .filter(input => input.checked)
+      .map(input => Number(input.value))
+      .filter(id => Number.isFinite(id));
+  }
   
  function applySettingsToTab(settings) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -344,7 +392,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.get([
       'dyslexicFont', 'softColors', 'removeDistractions',
       'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer',
-      'themeMode', 'themePalette'
+      'themeMode', 'themePalette', 'userProfile'
     ], (result) => {
       if (dyslexicFontChk) dyslexicFontChk.checked = result.dyslexicFont || false;
       if (softColorsChk) softColorsChk.checked = result.softColors || false;
@@ -360,6 +408,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const storedPalette = result.themePalette || (storedMode === 'dark' ? 'softCharcoal' : 'creamSepia');
       if (themeModeSelect) themeModeSelect.value = storedMode;
       populatePaletteOptions(storedMode, storedPalette);
+      if (result.userProfile) {
+        if (adhdSlider) adhdSlider.value = result.userProfile.adhd ?? adhdSlider.value;
+        if (dyslexiaSlider) dyslexiaSlider.value = result.userProfile.dyslexia ?? dyslexiaSlider.value;
+        if (autismSlider) autismSlider.value = result.userProfile.autism ?? autismSlider.value;
+        if (adhdValue) adhdValue.textContent = adhdSlider ? adhdSlider.value : adhdValue.textContent;
+        if (dyslexiaValue) dyslexiaValue.textContent = dyslexiaSlider ? dyslexiaSlider.value : dyslexiaValue.textContent;
+        if (autismValue) autismValue.textContent = autismSlider ? autismSlider.value : autismValue.textContent;
+        refreshRecommendations();
+      }
       console.log('UI loaded with settings:', result);
     });
   }
@@ -402,6 +459,57 @@ document.addEventListener('DOMContentLoaded', () => {
   if (speechStopBtn) {
     speechStopBtn.onclick = () => {
       sendSpeechCommand({ action: 'stopSpeech' });
+    };
+  }
+
+  if (tabRefresh) tabRefresh.onclick = refreshTabs;
+
+  if (tabSelectAll) {
+    tabSelectAll.onclick = () => {
+      if (!tabList) return;
+      tabList.querySelectorAll('.tab-select').forEach(input => { input.checked = true; });
+    };
+  }
+
+  if (tabSelectNone) {
+    tabSelectNone.onclick = () => {
+      if (!tabList) return;
+      tabList.querySelectorAll('.tab-select').forEach(input => { input.checked = false; });
+    };
+  }
+
+  if (tabList) {
+    tabList.addEventListener('click', (event) => {
+      const item = event.target.closest('.tab-item');
+      if (!item) return;
+      const checkbox = item.querySelector('.tab-select');
+      if (!checkbox) return;
+      if (event.target.tagName !== 'INPUT') {
+        checkbox.checked = !checkbox.checked;
+      }
+    });
+  }
+
+  if (tabAnalyze) {
+    tabAnalyze.onclick = () => {
+      const selectedTabs = getSelectedTabIds();
+      const query = tabQuery ? tabQuery.value.trim() : '';
+      if (!query) {
+        if (tabResult) tabResult.textContent = 'Please enter a question.';
+        return;
+      }
+      if (selectedTabs.length === 0) {
+        if (tabResult) tabResult.textContent = 'Select at least one tab.';
+        return;
+      }
+      if (tabResult) tabResult.textContent = 'Analyzing selected tabs...';
+      chrome.runtime.sendMessage({ action: 'analyzeTabs', tabIds: selectedTabs, query }, (response) => {
+        if (chrome.runtime.lastError || !response?.success) {
+          if (tabResult) tabResult.textContent = response?.error || 'Analysis failed.';
+          return;
+        }
+        if (tabResult) tabResult.textContent = response.answer || 'No answer returned.';
+      });
     };
   }
   
@@ -555,6 +663,8 @@ document.addEventListener('DOMContentLoaded', () => {
       populatePaletteOptions('light', 'creamSepia');
     }
   });
+
+  refreshTabs();
 });
 
 

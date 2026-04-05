@@ -342,6 +342,15 @@ try {
         sendResponse({ success: true });
       }
 
+      if (request.action === 'getTabSummary') {
+        try {
+          const summary = getTabSummary();
+          sendResponse({ success: true, summary });
+        } catch (e) {
+          sendResponse({ success: false, error: e.message || 'Summary failed' });
+        }
+      }
+
       return true;
 
     } catch (e) {
@@ -366,6 +375,18 @@ function applyAllModifications() {
     try { stopAnimationObserver(); } catch (e) { }
     try { removeStructuredLayout(); } catch (e) { }
   });
+}
+
+function getTabSummary() {
+  const title = document.title || '';
+  const url = window.location.href || '';
+  const main = findMainContent();
+  let text = (main?.innerText || '').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+  }
+  text = text.slice(0, 1200);
+  return { title, url, text };
 }
 
 function maybeAutoSimplifyByReadingAge() {
@@ -2310,8 +2331,9 @@ function applyFocusMode(mainContentSelector, distractionSelectors) {
     document.head.appendChild(style);
   }
 
+  let mainEl = null;
   if (mainContentSelector) {
-    const mainEl = document.querySelector(mainContentSelector);
+    mainEl = document.querySelector(mainContentSelector);
     if (mainEl) {
       mainEl.classList.add('focus-mode');
       mainEl.setAttribute('data-neuro-main', 'true');
@@ -2320,8 +2342,18 @@ function applyFocusMode(mainContentSelector, distractionSelectors) {
 
   if (Array.isArray(distractionSelectors)) {
     distractionSelectors.forEach(selector => {
+      if (!selector || selector === mainContentSelector) return;
       try {
         document.querySelectorAll(selector).forEach(el => {
+          if (!(el instanceof HTMLElement)) return;
+          const tag = el.tagName.toLowerCase();
+          if (['html', 'body', 'main', 'article'].includes(tag)) return;
+          if (el.id === 'app' || el.id === 'root') return;
+          if (mainEl && (el === mainEl || el.contains(mainEl))) return;
+
+          const rect = el.getBoundingClientRect();
+          if (rect.width > window.innerWidth * 0.6 && rect.height > window.innerHeight * 0.5) return;
+
           el.style.display = 'none';
           el.setAttribute('data-neuro-hidden', 'true');
         });
@@ -2790,26 +2822,25 @@ async function simplifyPageWithAI() {
     return;
   }
 
-  // Target all meaningful text blocks
+  // Target all meaningful visible text blocks
   const textElements = mainContent.querySelectorAll('p, li, blockquote');
-  showNotification('AI is restructuring page in batches...', 'loading');
+  showNotification('AI is restructuring page in one batch...', 'loading');
 
-  const elements = Array.from(textElements).filter(el => (el.innerText || '').trim().length >= 60);
+  const elements = Array.from(textElements).filter(el => {
+    const text = (el.innerText || '').trim();
+    return text.length >= 60 && isVisibleElement(el);
+  });
 
-  const BATCH_SIZE = 10;
-  for (let i = 0; i < elements.length; i += BATCH_SIZE) {
-    const chunk = elements.slice(i, i + BATCH_SIZE);
-    const originalTexts = chunk.map(el => (el.innerText || '').trim());
+  const originalTexts = elements.map(el => (el.innerText || '').trim());
 
-    // Call AI for this batch to ensure 1:1 restructuring
-    const response = await new Promise((resolve) => {
-      safeSendMessage({ action: 'simplifyTextBatch', texts: originalTexts }, (result) => resolve(result));
-    });
+  const response = await new Promise((resolve) => {
+    safeSendMessage({ action: 'simplifyTextBatch', texts: originalTexts }, (result) => resolve(result));
+  });
 
-    if (response?.success && response.simplifiedTexts) {
-      chunk.forEach((el, index) => {
-        const rawText = response.simplifiedTexts[index] || originalTexts[index];
-        const originalText = originalTexts[index];
+  if (response?.success && response.simplifiedTexts) {
+    elements.forEach((el, index) => {
+      const rawText = response.simplifiedTexts[index] || originalTexts[index];
+      const originalText = originalTexts[index];
 
         // SPLIT the AI text into an array of bullets
         const bulletPoints = rawText
@@ -2854,11 +2885,13 @@ async function simplifyPageWithAI() {
         el.style.borderLeft = '4px solid #6c5ce7';
         el.style.padding = '15px';
         el.style.borderRadius = '12px';
-        el.setAttribute('data-neuro-simplified', 'true');
-      });
-    }
+      el.setAttribute('data-neuro-simplified', 'true');
+    });
   }
   showNotification('✓ Page restructured into bullets!', 'success');
+  if (currentSettings.bionicReading) {
+    setTimeout(() => applyBionicReading(), 100);
+  }
 }
 
 function splitIntoSentences(text) {
@@ -4155,84 +4188,62 @@ window.addEventListener('beforeunload', () => {
 const bionicWordCache = new Map();
 
 function applyBionicReading() {
-  if (document.getElementById('bionic-reading-style')) return;
-  const style = document.createElement('style');
-  style.id = 'bionic-reading-style';
-  style.textContent = `
-    .bionic-bold {
-      font-weight: 700 !important;
-      opacity: 1 !important;
-    }
-    .bionic-rest {
-      opacity: 0.8 !important;
-      font-weight: 400 !important;
-    }
-  `;
-  document.head.appendChild(style);
+  removeBionicReading();
 
-  const textNodes = [];
-  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-  let node;
-  const skipTags = new Set(['SCRIPT', 'STYLE', 'CODE', 'PRE', 'NOSCRIPT', 'TEXTAREA']);
-  while ((node = walk.nextNode())) {
-    if (!skipTags.has(node.parentNode.tagName) && node.nodeValue.trim().length > 0) {
-      textNodes.push(node);
-    }
+  if (!document.getElementById('bionic-reading-style')) {
+    const style = document.createElement('style');
+    style.id = 'bionic-reading-style';
+    style.textContent = `
+      [data-bionic] b { font-weight: 700 !important; opacity: 1 !important; }
+      [data-bionic] span { font-weight: 400 !important; opacity: 0.8 !important; }
+    `;
+    document.head.appendChild(style);
   }
 
+  const mainContent = findMainContent() || document.body;
+  const walk = document.createTreeWalker(mainContent, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      const tag = parent.tagName.toUpperCase();
+      const skip = ['SCRIPT', 'STYLE', 'CODE', 'PRE', 'NOSCRIPT', 'TEXTAREA', 'INPUT', 'BUTTON', 'NAV', 'SVG'];
+      if (skip.includes(tag) || parent.closest('[data-bionic]')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  const textNodes = [];
+  let node;
+  while ((node = walk.nextNode())) textNodes.push(node);
+
   textNodes.forEach(textNode => {
-    if (textNode.parentNode && textNode.parentNode.hasAttribute('data-bionic')) return;
     const words = textNode.nodeValue.split(/(\s+)/);
     const fragment = document.createDocumentFragment();
-    let changed = false;
 
     words.forEach(word => {
-      // Small words or non-letters skip transformation
-      if (!/^[A-Za-z]+$/.test(word) || word.length < 2) {
+      if (!word || !/\p{L}/u.test(word) || word.length < 2) {
         fragment.appendChild(document.createTextNode(word));
         return;
       }
 
-      changed = true;
-      const lowerWord = word.toLowerCase();
-
-      // DS/Algo Polish: O(1) Hash Map Memoization for DOM creation
-      if (bionicWordCache.has(lowerWord)) {
-        const cachedNode = bionicWordCache.get(lowerWord).cloneNode(true);
-        // Retain original word casing dynamically
-        const bLen = cachedNode.childNodes[0].textContent.length;
-        cachedNode.childNodes[0].textContent = word.substring(0, bLen);
-        cachedNode.childNodes[1].textContent = word.substring(bLen);
-        fragment.appendChild(cachedNode);
-        return;
-      }
-
-      // First-time mathematical breakdown & DOM building
-      const bLetterCount = Math.ceil(word.length / 2);
-      const boldPart = word.substring(0, bLetterCount);
-      const restPart = word.substring(bLetterCount);
+      const mid = Math.ceil(word.length / 2);
+      const boldPart = word.slice(0, mid);
+      const restPart = word.slice(mid);
 
       const span = document.createElement('span');
       span.setAttribute('data-bionic', 'true');
 
-      const bSpan = document.createElement('span');
-      bSpan.className = 'bionic-bold';
-      bSpan.textContent = boldPart;
+      const b = document.createElement('b');
+      b.textContent = boldPart;
 
-      const rSpan = document.createElement('span');
-      rSpan.className = 'bionic-rest';
-      rSpan.textContent = restPart;
+      const s = document.createElement('span');
+      s.textContent = restPart;
 
-      span.appendChild(bSpan);
-      span.appendChild(rSpan);
-
-      // Index reference pure lowered text struct into Memory Map
-      bionicWordCache.set(lowerWord, span.cloneNode(true));
-
+      span.append(b, s);
       fragment.appendChild(span);
     });
 
-    if (changed) {
+    if (textNode.parentNode) {
       textNode.parentNode.replaceChild(fragment, textNode);
     }
   });
