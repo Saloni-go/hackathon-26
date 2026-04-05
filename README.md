@@ -1,4 +1,5 @@
-# Neuro-Inclusive Web (Hackathon-26)
+# GOOGLE BIG CODE
+## Neuro-Inclusive Web (Hackathon-26)
 
 AI-powered cognitive accessibility Chrome extension for ADHD, Autism, and Dyslexia. Includes real-time page adaptations, text simplification, cross‑tab analysis, and game-based screening to auto‑tune accessibility settings.
 
@@ -8,41 +9,6 @@ AI-powered cognitive accessibility Chrome extension for ADHD, Autism, and Dyslex
 - **AI APIs:** Google Gemini, Hugging Face Inference API
 - **Storage:** `chrome.storage.local`
 - **Scheduling:** `chrome.alarms`
-
-## AI & Intelligence Highlights
-- **Agentic Orchestrator:** Context‑aware rule system that infers page type + user intent and applies the right accessibility tools dynamically.
-- **RAG‑style Retrieval:** Cross‑tab summaries + paragraph ranking with cosine similarity; fallback heuristics if embeddings are unavailable.
-- **Queue + Backoff:** Gemini requests are serialized with retries to reduce rate‑limit errors.
-- **Caching Layer:** LRU caches with TTLs for jargon explanations, helper outputs, and AI responses.
-- **Local Fallbacks:** Heuristic simplification and tone inference when AI is unavailable.
-
-## Data Structures, Algorithms & Optimizations
-### Data Structures Used
-- **Fast Queue (array-backed):** Serialized Gemini calls to avoid burst rate‑limits and smooth throughput.
-- **LRU Cache (Map + recency order):** Stores hot AI results, jargon definitions, and helper responses with TTL expiration.
-- **`Map` / `Set`:** Used for quick membership checks (e.g., visited nodes, cached words, selected tabs).
-- **Priority Queue (custom):** Ranks candidate content nodes by heuristic score for main‑content detection.
-- **Hashing (simple hash keys):** Normalizes large inputs into cache keys for fast lookup.
-- **Arrays + slicing:** Paragraph batching, chunked TTS segments, and batched DOM updates.
-- **Record objects (plain JS objects):** Feature flags, learned preferences, and stored settings profiles.
-
-### Algorithms & Efficiency Notes
-- **LRU + TTL eviction:** Prevents unbounded memory growth while keeping frequent results hot.
-- **Cosine similarity ranking:** Embedding-based paragraph relevance for RAG‑style retrieval.
-- **Token overlap scoring:** Lightweight fallback when embeddings aren’t available.
-- **Debounced/batched observers:** Reduces reflow/paint cost on mutation‑heavy pages.
-- **Main‑content heuristics:** Minimizes noise by scoring likely primary content blocks.
-- **Speech chunking:** Prevents long‑form TTS failures and keeps playback responsive.
-
-## Tools & Frameworks
-- Chrome Extensions APIs (MV3 service worker + content scripts)
-- Web Speech API (`speechSynthesis`, `SpeechRecognition` when available)
-- Lightweight in‑memory caches and queueing
-
-## Languages
-- JavaScript
-- HTML
-- CSS
 
 ## Setup
 
@@ -82,18 +48,56 @@ This creates `config.js` in the project root with all environment values embedde
 // Auto-generated from .env. Do not edit directly.
 self.__ENV = {
 	HF_API_TOKEN: "...",
-	HF_API_URL: "...",
+	HF_API_URL: "https://api-inference.huggingface.co/models/facebook/bart-large-cnn",
 	GEMINI_API_KEY: "...",
-	GEMINI_MODEL: "...",
-	GEMINI_API_URL: "..."
+	GEMINI_MODEL: "gemini-2.5-flash",",
+	GEMINI_API_URL: "https://generativelanguage.googleapis.com/v1beta/models"
+"
 };
 ```
+
 
 ### 3) Load the extension in Chrome
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked** and select the `hackathon-26/` folder.
 4. Reload the extension after any changes.
+
+## AI & Intelligence Highlights
+- **Agentic Orchestrator:** Context‑aware rule system that infers page type + user intent and applies the right accessibility tools dynamically.
+- **RAG‑style Retrieval:** Cross‑tab summaries + paragraph ranking with cosine similarity; fallback heuristics if embeddings are unavailable.
+- **Queue + Backoff:** Gemini requests are serialized with retries to reduce rate‑limit errors.
+- **Caching Layer:** LRU caches with TTLs for jargon explanations, helper outputs, and AI responses.
+- **Local Fallbacks:** Heuristic simplification and tone inference when AI is unavailable.
+
+## Data Structures, Algorithms & Optimizations
+### Data Structures Used
+- **Fast Queue (array-backed):** Serialized Gemini calls to avoid burst rate‑limits and smooth throughput.
+- **LRU Cache (Map + recency order):** Stores hot AI results, jargon definitions, and helper responses with TTL expiration.
+- **`Map` / `Set`:** Used for quick membership checks (e.g., visited nodes, cached words, selected tabs).
+- **Priority Queue (custom):** Ranks candidate content nodes by heuristic score for main‑content detection.
+- **Hashing (simple hash keys):** Normalizes large inputs into cache keys for fast lookup.
+- **Arrays + slicing:** Paragraph batching, chunked TTS segments, and batched DOM updates.
+- **Record objects (plain JS objects):** Feature flags, learned preferences, and stored settings profiles.
+
+### Algorithms & Efficiency Notes
+- **LRU + TTL eviction:** Prevents unbounded memory growth while keeping frequent results hot.
+- **Cosine similarity ranking:** Embedding-based paragraph relevance for RAG‑style retrieval.
+- **Token overlap scoring:** Lightweight fallback when embeddings aren’t available.
+- **Debounced/batched observers:** Reduces reflow/paint cost on mutation‑heavy pages.
+- **Main‑content heuristics:** Minimizes noise by scoring likely primary content blocks.
+- **Speech chunking:** Prevents long‑form TTS failures and keeps playback responsive.
+
+## Tools & Frameworks
+- Chrome Extensions APIs (MV3 service worker + content scripts)
+- Web Speech API (`speechSynthesis`, `SpeechRecognition` when available)
+- Lightweight in‑memory caches and queueing
+
+## Languages
+- JavaScript
+- HTML
+- CSS
+
 
 ## Usage
 
