@@ -40,6 +40,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const removeAnimationsChk = document.getElementById('removeAnimations');
   const simplifyTextChk = document.getElementById('simplifyText');
   const jargonExplainerChk = document.getElementById('jargonExplainer');
+  const bionicReadingChk = document.getElementById('bionicReading');
+  const sensoryAutoBlockerChk = document.getElementById('sensoryAutoBlocker');
+  const cinemaFocusChk = document.getElementById('cinemaFocus');
   
   console.log('Elements found:', {
     startBtn: !!startBtn,
@@ -253,45 +256,34 @@ document.addEventListener('DOMContentLoaded', () => {
       removeAnimations: autism > 50 || adhd > 40,
       simplifyText: adhd > 50 || dyslexia > 60,
       jargonExplainer: dyslexia > 40 || adhd > 30,
+      bionicReading: adhd > 50 || dyslexia > 50,
+      sensoryAutoBlocker: autism > 60,
+      cinemaFocus: adhd > 60 || autism > 60,
       themeMode,
       themePalette
     };
+  }
+
+  function safeSendToTab(tabId, message, retries = 3) {
+    chrome.tabs.sendMessage(tabId, message, () => {
+      if (chrome.runtime.lastError && retries > 0) {
+        setTimeout(() => safeSendToTab(tabId, message, retries - 1), 200);
+      }
+    });
   }
   
  function applySettingsToTab(settings) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs && tabs.length > 0 && tabs[0].id && tabs[0].url && !tabs[0].url.startsWith('chrome://')) {
       try {
-        chrome.tabs.sendMessage(
-          tabs[0].id,
-          {
-            action: 'settingsUpdated',
-            settings: settings
-          },
-          (response) => {
-            if (chrome.runtime.lastError) {
-              console.log('Content script not ready, settings saved for next page load');
-              return;
-            }
+        safeSendToTab(tabs[0].id, {
+          action: 'settingsUpdated',
+          settings: settings
+        });
 
-            console.log('Settings applied to current tab');
-
-            // Explicitly trigger AI simplification every time it is enabled
-            if (settings.simplifyText) {
-              chrome.tabs.sendMessage(
-                tabs[0].id,
-                { action: 'simplifyPageWithAI' },
-                (simplifyResponse) => {
-                  if (chrome.runtime.lastError) {
-                    console.log('Could not trigger simplify action:', chrome.runtime.lastError.message);
-                  } else {
-                    console.log('Simplify action triggered');
-                  }
-                }
-              );
-            }
-          }
-        );
+        if (settings.simplifyText) {
+          safeSendToTab(tabs[0].id, { action: 'simplifyPageWithAI' });
+        }
       } catch (e) {
         console.log('Could not send to tab:', e.message);
       }
@@ -315,6 +307,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (removeAnimationsChk) removeAnimationsChk.checked = result.removeAnimations || false;
       if (simplifyTextChk) simplifyTextChk.checked = result.simplifyText || false;
       if (jargonExplainerChk) jargonExplainerChk.checked = result.jargonExplainer || false;
+      if (bionicReadingChk) bionicReadingChk.checked = result.bionicReading || false;
+      if (sensoryAutoBlockerChk) sensoryAutoBlockerChk.checked = result.sensoryAutoBlocker || false;
+      if (cinemaFocusChk) cinemaFocusChk.checked = result.cinemaFocus || false;
       const storedMode = result.themeMode === 'dark' ? 'dark' : 'light';
       const storedPalette = result.themePalette || (storedMode === 'dark' ? 'softCharcoal' : 'creamSepia');
       if (themeModeSelect) themeModeSelect.value = storedMode;
@@ -372,6 +367,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (removeAnimationsChk) removeAnimationsChk.checked = settings.removeAnimations;
         if (simplifyTextChk) simplifyTextChk.checked = settings.simplifyText;
         if (jargonExplainerChk) jargonExplainerChk.checked = settings.jargonExplainer;
+        if (bionicReadingChk) bionicReadingChk.checked = settings.bionicReading;
+        if (sensoryAutoBlockerChk) sensoryAutoBlockerChk.checked = settings.sensoryAutoBlocker;
+        if (cinemaFocusChk) cinemaFocusChk.checked = settings.cinemaFocus;
         if (themeModeSelect) themeModeSelect.value = settings.themeMode;
         populatePaletteOptions(settings.themeMode, settings.themePalette);
         
@@ -414,6 +412,9 @@ document.addEventListener('DOMContentLoaded', () => {
         removeAnimations: removeAnimationsChk ? removeAnimationsChk.checked : false,
         simplifyText: simplifyTextChk ? simplifyTextChk.checked : false,
         jargonExplainer: jargonExplainerChk ? jargonExplainerChk.checked : false,
+        bionicReading: bionicReadingChk ? bionicReadingChk.checked : false,
+        sensoryAutoBlocker: sensoryAutoBlockerChk ? sensoryAutoBlockerChk.checked : false,
+        cinemaFocus: cinemaFocusChk ? cinemaFocusChk.checked : false,
         themeMode: themeModeSelect ? (themeModeSelect.value === 'dark' ? 'dark' : 'light') : 'light',
         themePalette: themePaletteSelect ? themePaletteSelect.value : 'creamSepia'
       };
@@ -443,6 +444,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (removeAnimationsChk) removeAnimationsChk.checked = false;
       if (simplifyTextChk) simplifyTextChk.checked = false;
       if (jargonExplainerChk) jargonExplainerChk.checked = false;
+      if (bionicReadingChk) bionicReadingChk.checked = false;
+      if (sensoryAutoBlockerChk) sensoryAutoBlockerChk.checked = false;
+      if (cinemaFocusChk) cinemaFocusChk.checked = false;
       if (themeModeSelect) themeModeSelect.value = 'light';
       populatePaletteOptions('light', 'creamSepia');
       
@@ -738,6 +742,9 @@ if (saveBtnExtra) {
       removeAnimations: document.getElementById('removeAnimations')?.checked || false,
       simplifyText: document.getElementById('simplifyText')?.checked || false,
       jargonExplainer: document.getElementById('jargonExplainer')?.checked || false,
+      bionicReading: document.getElementById('bionicReading')?.checked || false,
+      sensoryAutoBlocker: document.getElementById('sensoryAutoBlocker')?.checked || false,
+      cinemaFocus: document.getElementById('cinemaFocus')?.checked || false,
       removeEmojis: removeEmojisChk ? removeEmojisChk.checked : false,
       collapseSidebars: collapseSidebarsChk ? collapseSidebarsChk.checked : false,
       focusCircleColor: currentFocusCircle,

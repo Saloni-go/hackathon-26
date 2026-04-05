@@ -13,7 +13,9 @@ let currentSettings = {
   jargonExplainer: false,
   toneDecoder: false,
   cognitiveScoring: true,
-  analyticsEnabled: true
+  analyticsEnabled: true,
+  bionicReading: false,
+  sensoryAutoBlocker: false
 };
 
 let readingRulerElement = null;
@@ -31,7 +33,9 @@ const TRACKED_FEATURES = [
   'removeAnimations',
   'simplifyText',
   'jargonExplainer',
-  'toneDecoder'
+  'toneDecoder',
+  'bionicReading',
+  'sensoryAutoBlocker'
 ];
 
 // ========== LRU CACHE (REUSABLE) ==========
@@ -229,7 +233,7 @@ function collectCandidateElements(root) {
 // ========== INITIALIZATION ==========
 
 chrome.storage.local.get(
-  ['dyslexicFont', 'softColors', 'themeMode', 'themePalette', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled'],
+  ['dyslexicFont', 'softColors', 'themeMode', 'themePalette', 'removeDistractions', 'readingRuler', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled', 'bionicReading', 'sensoryAutoBlocker', 'cinemaFocus'],
   (result) => {
     currentSettings.dyslexicFont = result.dyslexicFont || false;
     currentSettings.softColors = result.softColors || false;
@@ -243,11 +247,18 @@ chrome.storage.local.get(
     currentSettings.toneDecoder = result.toneDecoder || false;
     currentSettings.cognitiveScoring = result.cognitiveScoring !== false;
     currentSettings.analyticsEnabled = result.analyticsEnabled !== false;
+    currentSettings.bionicReading = result.bionicReading || false;
+    currentSettings.sensoryAutoBlocker = result.sensoryAutoBlocker || false;
+    currentSettings.cinemaFocus = result.cinemaFocus || false;
 
     applyAllModifications();
 
     if (currentSettings.simplifyText) {
-      simplifyPageWithAI();
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => simplifyPageWithAI());
+      } else {
+        simplifyPageWithAI();
+      }
     }
 
     if (!currentSettings.readingRuler) {
@@ -272,7 +283,11 @@ try {
         recordFeatureOverrides(previousSettings, currentSettings);
         applyAllModifications();
         if (!previousSettings.simplifyText && currentSettings.simplifyText) {
-          simplifyPageWithAI();
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => simplifyPageWithAI());
+          } else {
+            simplifyPageWithAI();
+          }
         }
         if (!currentSettings.readingRuler) {
           removeReadingRuler();
@@ -280,10 +295,14 @@ try {
         sendResponse({ success: true });
       }
 
-      
+
 
       if (request.action === 'simplifyPageWithAI') {
-        simplifyPageWithAI();
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', () => simplifyPageWithAI());
+        } else {
+          simplifyPageWithAI();
+        }
         sendResponse({ success: true });
       }
 
@@ -293,7 +312,7 @@ try {
       }
 
       return true;
-      
+
     } catch (e) {
       console.warn('Message handler error:', e);
       sendResponse({ success: false, error: e.message });
@@ -309,13 +328,86 @@ try {
 function applyAllModifications() {
   runMasterOrchestrator().catch((error) => {
     console.warn('Master Orchestrator failed, falling back to safe defaults:', error);
-    try { removeDyslexiaFont(); } catch (e) {}
-    try { removeSoftColors(); } catch (e) {}
-    try { stopDistractionObserver(); } catch (e) {}
-    try { removeReadingRuler(); } catch (e) {}
-    try { stopAnimationObserver(); } catch (e) {}
-    try { removeStructuredLayout(); } catch (e) {}
+    try { removeDyslexiaFont(); } catch (e) { }
+    try { removeSoftColors(); } catch (e) { }
+    try { stopDistractionObserver(); } catch (e) { }
+    try { removeReadingRuler(); } catch (e) { }
+    try { stopAnimationObserver(); } catch (e) { }
+    try { removeStructuredLayout(); } catch (e) { }
   });
+}
+
+async function runAgentLoop() {
+  const context = detectSiteContext();
+  const settings = await getEnabledSettingsFromStorage();
+  const userGoal = settings.userIntent || '';
+
+  const payload = {
+    context: {
+      pageType: context.pageType,
+      signals: context.signals,
+      hostname: context.hostname,
+      textLength: (document.body?.innerText || '').trim().length
+    },
+    settings,
+    userGoal
+  };
+
+  const planResult = await new Promise((resolve) => {
+    safeSendMessage({ action: 'inferGoalPlan', payload }, (response, error) => {
+      if (error || !response?.success) {
+        resolve({ error: response?.error || error?.message || 'Unknown error' });
+        return;
+      }
+      resolve(response.plan || null);
+    });
+  });
+
+  if (!planResult || planResult.error) {
+    console.warn('Agent loop failed:', planResult?.error || 'No plan');
+    return;
+  }
+
+  const { goal, actions } = planResult;
+  const safeActions = Array.isArray(actions) ? actions.slice(0, 3) : [];
+  const applied = await applyAgentActions(safeActions);
+
+  chrome.storage.local.set({
+    userIntent: goal || userGoal,
+    agentLastRun: {
+      goal: goal || userGoal,
+      actions: safeActions,
+      applied,
+      timestamp: Date.now()
+    }
+  });
+}
+
+async function applyAgentActions(actions = []) {
+  const updates = {};
+  const applied = [];
+
+  actions.forEach((action) => {
+    if (!action || action.type !== 'set_feature') return;
+    const feature = action.feature;
+    const enabled = action.enabled;
+    if (typeof enabled !== 'boolean') return;
+    if (!TRACKED_FEATURES.includes(feature) && !['softColors', 'removeAnimations', 'simplifyText', 'jargonExplainer', 'toneDecoder', 'readingRuler', 'removeDistractions'].includes(feature)) {
+      return;
+    }
+    updates[feature] = enabled;
+    applied.push({ feature, enabled });
+  });
+
+  if (Object.keys(updates).length === 0) return [];
+
+  await new Promise((resolve) => chrome.storage.local.set(updates, resolve));
+  currentSettings = { ...currentSettings, ...updates };
+  applyAllModifications();
+  if (updates.simplifyText) simplifyPageWithAI();
+  if (updates.readingRuler === false) removeReadingRuler();
+
+  return applied;
 }
 
 function getEnabledSettingsFromStorage() {
@@ -324,7 +416,7 @@ function getEnabledSettingsFromStorage() {
       'dyslexicFont', 'softColors', 'themeMode', 'themePalette',
       'removeDistractions', 'readingRuler', 'removeAnimations',
       'simplifyText', 'jargonExplainer', 'toneDecoder', 'cognitiveScoring', 'analyticsEnabled',
-      'userIntent'
+      'userIntent', 'bionicReading', 'sensoryAutoBlocker', 'cinemaFocus'
     ];
     chrome.storage.local.get(keys, (result) => {
       const settings = {
@@ -340,7 +432,10 @@ function getEnabledSettingsFromStorage() {
         toneDecoder: result.toneDecoder || false,
         cognitiveScoring: result.cognitiveScoring !== false,
         analyticsEnabled: result.analyticsEnabled !== false,
-        userIntent: result.userIntent || ''
+        userIntent: result.userIntent || '',
+        bionicReading: result.bionicReading || false,
+        sensoryAutoBlocker: result.sensoryAutoBlocker || false,
+        cinemaFocus: result.cinemaFocus || false
       };
 
       resolve(mergeLearnedOverrides(settings));
@@ -1165,7 +1260,7 @@ function startMotionSilencer() {
   }
 
   document.querySelectorAll('video, audio').forEach(media => {
-    try { media.pause(); } catch (e) {}
+    try { media.pause(); } catch (e) { }
   });
 
   if (motionSilencerObserver) motionSilencerObserver.disconnect();
@@ -1176,10 +1271,10 @@ function startMotionSilencer() {
       roots.forEach((node) => {
         if (!(node instanceof HTMLElement)) return;
         if (node.tagName === 'VIDEO' || node.tagName === 'AUDIO') {
-          try { node.pause(); } catch (e) {}
+          try { node.pause(); } catch (e) { }
         }
         node.querySelectorAll?.('video, audio').forEach(media => {
-          try { media.pause(); } catch (e) {}
+          try { media.pause(); } catch (e) { }
         });
       });
     }
@@ -1380,6 +1475,9 @@ async function runMasterOrchestrator() {
   runFeatureSafely(summary, 'jargonExplainer', shouldUseJargonExplainer, initJargonExplainer, null);
   runFeatureSafely(summary, 'toneDecoder', settingsFromStorage.toneDecoder, initToneDecoder, removeToneDecoder);
   runFeatureSafely(summary, 'structuredLayout', shouldUseStructuredLayout, applyStructuredLayout, removeStructuredLayout);
+  runFeatureSafely(summary, 'bionicReading', settingsFromStorage.bionicReading, applyBionicReading, removeBionicReading);
+  runFeatureSafely(summary, 'sensoryAutoBlocker', settingsFromStorage.sensoryAutoBlocker, applySensoryAutoBlocker, removeSensoryAutoBlocker);
+  runFeatureSafely(summary, 'cinemaFocus', settingsFromStorage.cinemaFocus, applyCinemaFocus, removeCinemaFocus);
 
   runFocusGuard(context, userIntent, settingsFromStorage, summary);
 
@@ -1752,7 +1850,7 @@ function getMainContentElement() {
 
   for (const selector of candidates) {
     const el = document.querySelector(selector);
-    if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
+    if (el && el.offsetWidth > 0 && el.offsetHeight > 0 && (el.innerText || '').trim().length > 200) {
       return el;
     }
   }
@@ -2078,17 +2176,25 @@ async function simplifyPageWithAI() {
 
   // Target all meaningful text blocks
   const textElements = mainContent.querySelectorAll('p, li, blockquote');
-  showNotification('AI is restructuring page...', 'loading');
+  showNotification('AI is restructuring page in batches...', 'loading');
 
-  for (const el of textElements) {
-    const originalText = (el.innerText || '').trim();
-    if (originalText.length < 60) continue; // Skip short snippets
+  const elements = Array.from(textElements).filter(el => (el.innerText || '').trim().length >= 60);
 
-    // Call AI for this specific block to ensure 1:1 restructuring
-    safeSendMessage({ action: 'simplifyText', text: originalText }, (response) => {
-      if (response?.success && response.simplifiedText) {
-        const rawText = response.simplifiedText;
-        
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < elements.length; i += BATCH_SIZE) {
+    const chunk = elements.slice(i, i + BATCH_SIZE);
+    const originalTexts = chunk.map(el => (el.innerText || '').trim());
+
+    // Call AI for this batch to ensure 1:1 restructuring
+    const response = await new Promise((resolve) => {
+      safeSendMessage({ action: 'simplifyTextBatch', texts: originalTexts }, (result) => resolve(result));
+    });
+
+    if (response?.success && response.simplifiedTexts) {
+      chunk.forEach((el, index) => {
+        const rawText = response.simplifiedTexts[index] || originalTexts[index];
+        const originalText = originalTexts[index];
+
         // SPLIT the AI text into an array of bullets
         const bulletPoints = rawText
           .split(/\n/)
@@ -2106,9 +2212,9 @@ async function simplifyPageWithAI() {
         });
 
         // CLEAR the original element and turn it into a list container
-        el.innerHTML = ''; 
+        el.innerHTML = '';
         el.classList.add('neuro-simplified-container');
-        
+
         const list = document.createElement('ul');
         list.style.listStyle = 'none';
         list.style.padding = '0';
@@ -2123,18 +2229,18 @@ async function simplifyPageWithAI() {
         });
 
         el.appendChild(list);
-        
+
         // Add the Restore/Original button at the bottom
         addRestoreButtonToElement(el, originalText);
-        
+
         // Apply visual styling to the parent container
         el.style.backgroundColor = 'rgba(108,92,231,0.05)';
         el.style.borderLeft = '4px solid #6c5ce7';
         el.style.padding = '15px';
         el.style.borderRadius = '12px';
         el.setAttribute('data-neuro-simplified', 'true');
-      }
-    });
+      });
+    }
   }
   showNotification('✓ Page restructured into bullets!', 'success');
 }
@@ -2165,10 +2271,10 @@ function applyBasicSimplification(textToSimplify) {
   for (const item of textToSimplify) {
     let text = item.text;
     let originalLength = text.length;
-    
+
     // Step 1: Extract key sentences
     const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 15);
-    
+
     // Step 2: Take only the most important sentences (max 5)
     let keySentences = [];
     if (sentences.length <= 3) {
@@ -2183,7 +2289,7 @@ function applyBasicSimplification(textToSimplify) {
       // Last sentence (conclusion)
       keySentences.push(sentences[sentences.length - 1]);
     }
-    
+
     // Step 3: Aggressive word simplification
     const replacements = {
       'utilize': 'use', 'implement': 'use', 'additional': 'more',
@@ -2198,7 +2304,7 @@ function applyBasicSimplification(textToSimplify) {
       'in the event that': 'if', 'on the other hand': 'but',
       'as a result': 'so', 'in conclusion': 'in short', 'to summarize': 'in short'
     };
-    
+
     let simplifiedText = '';
     for (const sentence of keySentences) {
       let processed = sentence.trim();
@@ -2214,7 +2320,7 @@ function applyBasicSimplification(textToSimplify) {
       }
       simplifiedText += processed + '\n\n';
     }
-    
+
     // Step 4: Convert to bullet points
     const bulletPoints = simplifiedText.split('\n\n').filter(p => p.trim());
     let finalText = '';
@@ -2227,7 +2333,7 @@ function applyBasicSimplification(textToSimplify) {
         finalText += `• ${bulletPoints[i]}\n\n`;
       }
     }
-    
+
     // Apply to element with visual styling
     item.element.innerHTML = finalText;
     item.element.classList.add('neuro-simplified');
@@ -2239,7 +2345,7 @@ function applyBasicSimplification(textToSimplify) {
     item.element.style.fontSize = '16px';
     item.element.style.lineHeight = '1.5';
     item.element.setAttribute('data-neuro-simplified', 'true');
-    
+
     // Add a "Show Original" button next to simplified text
     addRestoreButtonToElement(item.element, item.text);
   }
@@ -2248,7 +2354,7 @@ function applyBasicSimplification(textToSimplify) {
 function addRestoreButtonToElement(element, originalText) {
   // Don't add if button already exists for this element
   if (element.querySelector('.neuro-restore-btn')) return;
-  
+
   const restoreBtn = document.createElement('button');
   restoreBtn.className = 'neuro-restore-btn';
   restoreBtn.innerHTML = '↺ Original';
@@ -2266,7 +2372,7 @@ function addRestoreButtonToElement(element, originalText) {
   `;
   restoreBtn.onmouseenter = () => { restoreBtn.style.background = '#6c5ce7'; restoreBtn.style.color = 'white'; };
   restoreBtn.onmouseleave = () => { restoreBtn.style.background = '#2d2d44'; restoreBtn.style.color = '#aaa'; };
-  
+
   let isOriginal = false;
   restoreBtn.onclick = (e) => {
     e.stopPropagation();
@@ -2283,7 +2389,7 @@ function addRestoreButtonToElement(element, originalText) {
     }
     isOriginal = !isOriginal;
   };
-  
+
   element.style.position = 'relative';
   element.appendChild(restoreBtn);
 }
@@ -2311,6 +2417,9 @@ const jargonCache = new Map();  // Cache for definitions to avoid repeated API c
 const jargonPending = new Map(); // Track in-flight requests
 let jargonObserver = null;
 let jargonScanTimeout = null;
+const JARGON_HOVER_DELAY_MS = 400;
+const JARGON_MAX_INFLIGHT = 2;
+let jargonInFlight = 0;
 
 // Clean word for caching
 function cleanWord(word) {
@@ -2320,10 +2429,10 @@ function cleanWord(word) {
 // Check if a word might be jargon (heuristic - fast filtering before API call)
 function isLikelyJargon(word) {
   if (!word || word.length < 5) return false;
-  
+
   const clean = cleanWord(word);
   if (clean.length < 5) return false;
-  
+
   // Common words that are definitely not jargon
   const commonWords = new Set([
     'the', 'and', 'for', 'are', 'but', 'not', 'you', 'with', 'have', 'this',
@@ -2337,9 +2446,9 @@ function isLikelyJargon(word) {
     'sometimes', 'usually', 'often', 'rarely', 'quickly', 'slowly', 'carefully',
     'happily', 'sadly', 'loudly', 'quietly', 'brightly', 'darkly', 'softly', 'hardly'
   ]);
-  
+
   if (commonWords.has(clean)) return false;
-  
+
   // Words that are likely jargon: longer words or technical-looking
   return clean.length > 6 || /^(re|de|un|in|im|dis|pre|post|anti|pro|sub|super|inter|intra|multi|poly|bio|geo|hydro|thermo|psycho|neuro)/.test(clean);
 }
@@ -2348,19 +2457,19 @@ function isLikelyJargon(word) {
 async function getGeminiDefinition(word, context = '') {
   const clean = cleanWord(word);
   if (!clean) return null;
-  
+
   // Check cache first
   if (jargonCache.has(clean)) {
     console.log(`Jargon cache hit: ${clean}`);
     return jargonCache.get(clean);
   }
-  
+
   // Check if already fetching
   if (jargonPending.has(clean)) {
     console.log(`Waiting for pending request: ${clean}`);
     return jargonPending.get(clean);
   }
-  
+
   // Create promise for this request
   const requestPromise = new Promise((resolve) => {
     console.log(`Fetching Gemini definition for: ${clean}`);
@@ -2373,28 +2482,28 @@ async function getGeminiDefinition(word, context = '') {
       resolve(response.definition);
     });
   });
-  
+
   // Store the promise to avoid duplicate requests
   jargonPending.set(clean, requestPromise);
-  
+
   // Wait for the definition and cache it
   const definition = await requestPromise;
   jargonCache.set(clean, definition);
   jargonPending.delete(clean);
-  
+
   // Limit cache size
   if (jargonCache.size > 300) {
     const firstKey = jargonCache.keys().next().value;
     jargonCache.delete(firstKey);
   }
-  
+
   return definition;
 }
 
 // Generate a fallback definition when API is unavailable
 function generateFallbackDefinition(word) {
   const clean = cleanWord(word);
-  
+
   // Simple heuristics for common patterns
   if (clean.endsWith('tion') || clean.endsWith('sion')) {
     return `"${word}" - the act or result of doing something`;
@@ -2417,7 +2526,7 @@ function generateFallbackDefinition(word) {
   if (clean.startsWith('pre')) {
     return `"${word}" - before or earlier`;
   }
-  
+
   return `"${word}" - a specific term. Hover for AI definition (needs API key)`;
 }
 
@@ -2431,10 +2540,10 @@ function showJargonTooltip(word, definition, x, y, isLoading = false) {
     activeTooltip.remove();
     activeTooltip = null;
   }
-  
+
   const tooltip = document.createElement('div');
   tooltip.id = 'neuro-jargon-tooltip';
-  
+
   if (isLoading) {
     tooltip.innerHTML = `
       <div style="display:flex; align-items:center; gap:8px;">
@@ -2452,7 +2561,7 @@ function showJargonTooltip(word, definition, x, y, isLoading = false) {
       <div style="font-size:10px; color:#888; margin-top:6px;">🤖 AI-powered definition</div>
     `;
   }
-  
+
   tooltip.style.cssText = `
     position: fixed;
     left: ${Math.min(x + 10, window.innerWidth - 300)}px;
@@ -2472,10 +2581,10 @@ function showJargonTooltip(word, definition, x, y, isLoading = false) {
     pointer-events: none;
     backdrop-filter: blur(8px);
   `;
-  
+
   document.body.appendChild(tooltip);
   activeTooltip = tooltip;
-  
+
   // Auto-hide after 8 seconds
   if (tooltipTimeout) clearTimeout(tooltipTimeout);
   tooltipTimeout = setTimeout(() => {
@@ -2497,7 +2606,7 @@ function hideJargonTooltip() {
 // Helper to escape HTML
 function escapeHtml(str) {
   if (!str) return '';
-  return str.replace(/[&<>]/g, function(m) {
+  return str.replace(/[&<>]/g, function (m) {
     if (m === '&') return '&amp;';
     if (m === '<') return '&lt;';
     if (m === '>') return '&gt;';
@@ -2508,9 +2617,9 @@ function escapeHtml(str) {
 // Scan page and wrap jargon words
 function scanJargonInRoot(root) {
   if (!root || !currentSettings.jargonExplainer) return;
-  
+
   console.log('Scanning for jargon words...');
-  
+
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode: (node) => {
       // Skip if already processed or inside script/style
@@ -2527,22 +2636,22 @@ function scanJargonInRoot(root) {
   while (walker.nextNode()) {
     if (textNodes.length < 800) textNodes.push(walker.currentNode);
   }
-  
+
   console.log(`Found ${textNodes.length} text nodes to scan`);
 
   textNodes.forEach(node => {
     const text = node.textContent;
     if (!text || text.length < 30) return;
-    
+
     // Split into words, preserving spaces and punctuation
     const words = text.split(/(\s+|[.,!?;:()\[\]{}"'])/);
     let modified = false;
     let jargonWordsFound = [];
-    
+
     for (let i = 0; i < words.length; i++) {
       const token = words[i];
       if (!token || !token.trim()) continue;
-      
+
       // Check if this token might be a word (contains letters)
       if (/[a-zA-Z]/.test(token)) {
         const clean = token.toLowerCase().replace(/[^a-z]/g, '');
@@ -2551,7 +2660,7 @@ function scanJargonInRoot(root) {
         }
       }
     }
-    
+
     // Process found jargon words
     for (const { token, clean, index } of jargonWordsFound) {
       const span = document.createElement('span');
@@ -2562,38 +2671,53 @@ function scanJargonInRoot(root) {
       span.style.display = 'inline';
       span.style.transition = 'background-color 0.2s';
       span.setAttribute('data-jargon-word', clean);
-      
+
       let definitionLoaded = false;
       let currentDefinition = null;
-      
-      span.addEventListener('mouseenter', async (e) => {
-        const rect = span.getBoundingClientRect();
-        
-        // Show loading tooltip
-        showJargonTooltip(clean, 'Fetching definition...', rect.left, rect.top, true);
-        
-        // Get definition from Gemini
-        const context = getContextForWord(span);
-        const definition = await getGeminiDefinition(clean, context);
-        
-        if (!definitionLoaded) {
-          definitionLoaded = true;
-          currentDefinition = definition;
-          showJargonTooltip(clean, definition, rect.left, rect.top, false);
-        }
-        
-        // Track hover for analytics
-        safeSendMessage({ action: 'trackJargonHover' });
+      let hoverTimer = null;
+
+      span.addEventListener('mouseenter', () => {
+        if (hoverTimer) clearTimeout(hoverTimer);
+        hoverTimer = setTimeout(async () => {
+          const rect = span.getBoundingClientRect();
+
+          if (jargonInFlight >= JARGON_MAX_INFLIGHT) {
+            showJargonTooltip(clean, 'Too many requests. Try again in a moment.', rect.left, rect.top, false);
+            return;
+          }
+
+          jargonInFlight += 1;
+          showJargonTooltip(clean, 'Fetching definition...', rect.left, rect.top, true);
+
+          try {
+            const context = getContextForWord(span);
+            const definition = await getGeminiDefinition(clean, context);
+
+            if (!definitionLoaded) {
+              definitionLoaded = true;
+              currentDefinition = definition;
+              showJargonTooltip(clean, definition, rect.left, rect.top, false);
+            }
+
+            safeSendMessage({ action: 'trackJargonHover' });
+          } finally {
+            jargonInFlight = Math.max(0, jargonInFlight - 1);
+          }
+        }, JARGON_HOVER_DELAY_MS);
       });
-      
+
       span.addEventListener('mouseleave', () => {
+        if (hoverTimer) {
+          clearTimeout(hoverTimer);
+          hoverTimer = null;
+        }
         hideJargonTooltip();
       });
-      
+
       words[index] = span;
       modified = true;
     }
-    
+
     if (modified) {
       const fragment = document.createDocumentFragment();
       words.forEach(item => {
@@ -2606,7 +2730,7 @@ function scanJargonInRoot(root) {
       node.parentNode.replaceChild(fragment, node);
     }
   });
-  
+
   console.log('Jargon scan complete');
 }
 
@@ -2614,33 +2738,33 @@ function scanJargonInRoot(root) {
 function getContextForWord(element) {
   const parent = element.parentElement;
   if (!parent) return '';
-  
+
   // Get up to 100 characters before and after
   const text = parent.innerText || '';
   const wordText = element.textContent;
   const wordIndex = text.indexOf(wordText);
-  
+
   if (wordIndex === -1) return '';
-  
+
   const start = Math.max(0, wordIndex - 60);
   const end = Math.min(text.length, wordIndex + wordText.length + 60);
   let context = text.substring(start, end);
-  
+
   // Clean up context
   context = context.replace(/\s+/g, ' ').trim();
-  
+
   return context;
 }
 
 // Initialize jargon explainer
 function initJargonExplainer() {
   if (!currentSettings.jargonExplainer) return;
-  
+
   console.log('Initializing Gemini-powered Jargon Explainer...');
-  
+
   // Debounce scanning to avoid performance issues
   if (jargonScanTimeout) clearTimeout(jargonScanTimeout);
-  
+
   jargonScanTimeout = setTimeout(() => {
     const mainContent = findMainContent();
     if (mainContent) {
@@ -2654,14 +2778,14 @@ function initJargonExplainer() {
 
 function startJargonObserver() {
   if (jargonObserver) jargonObserver.disconnect();
-  
+
   jargonObserver = new MutationObserver((mutations) => {
     // Debounce observer to avoid excessive scanning
     if (jargonScanTimeout) clearTimeout(jargonScanTimeout);
-    
+
     jargonScanTimeout = setTimeout(() => {
       if (!currentSettings.jargonExplainer) return;
-      
+
       // Check if new content was added
       let hasNewContent = false;
       for (const mutation of mutations) {
@@ -2670,14 +2794,16 @@ function startJargonObserver() {
           break;
         }
       }
-      
+
       if (hasNewContent) {
+        if (jargonObserver) jargonObserver.disconnect();
         const mainContent = findMainContent();
         scanJargonInRoot(mainContent || document.body);
+        jargonObserver.observe(document.body, { childList: true, subtree: true });
       }
     }, 1000);
   });
-  
+
   jargonObserver.observe(document.body, { childList: true, subtree: true });
 }
 
@@ -3021,17 +3147,41 @@ function inferSettingsFromPrompt(prompt) {
 }
 
 function applySettingsFromPrompt(prompt) {
-  const updates = inferSettingsFromPrompt(prompt);
-  if (!updates || Object.keys(updates).length === 0) {
-    return { success: false, message: 'Could not infer changes. Try mentioning distractions, colors, ruler, or simplify.' };
-  }
+  return new Promise((resolve) => {
+    safeSendMessage({ action: 'aiHelperInterpret', prompt }, (response, error) => {
+      if (error || !response?.success || !response?.updates) {
+        const fallback = inferSettingsFromPrompt(prompt);
+        if (!fallback || Object.keys(fallback).length === 0) {
+          resolve({
+            success: false,
+            message: response?.error || 'Could not understand your request.'
+          });
+          return;
+        }
 
-  currentSettings = { ...currentSettings, ...updates };
-  chrome.storage.local.set(updates, () => {
-    applyAllModifications();
+        currentSettings = { ...currentSettings, ...fallback };
+        chrome.storage.local.set(fallback, () => {
+          applyAllModifications();
+          resolve({
+            success: true,
+            message: 'Applied changes using fallback rules.'
+          });
+        });
+        return;
+      }
+
+      const updates = response.updates;
+      currentSettings = { ...currentSettings, ...updates };
+
+      chrome.storage.local.set(updates, () => {
+        applyAllModifications();
+        resolve({
+          success: true,
+          message: response.message || 'Applied AI-suggested changes.'
+        });
+      });
+    });
   });
-
-  return { success: true, message: 'Applied changes based on your request.' };
 }
 
 function createAIAssistant() {
@@ -3133,14 +3283,21 @@ function createAIAssistant() {
     }
   };
 
-  applyBtn.onclick = () => {
-    const prompt = input?.value?.trim();
+  applyBtn.onclick = async () => {
+    const prompt = input.value.trim();
     if (!prompt) {
-      if (status) status.textContent = 'Please enter or speak a request.';
+      status.textContent = 'Please describe what you want changed.';
       return;
     }
-    const result = applySettingsFromPrompt(prompt);
-    if (status) status.textContent = result.message;
+
+    status.textContent = 'Thinking...';
+
+    try {
+      const result = await applySettingsFromPrompt(prompt);
+      status.textContent = result.message || (result.success ? 'Done.' : 'Could not apply changes.');
+    } catch (e) {
+      status.textContent = e.message || 'Something went wrong.';
+    }
   };
 }
 
@@ -3180,7 +3337,7 @@ function stopEmojiObserver() {
   }
 }
 
-// ===== COLLAPSE SIDEBARS =====
+// ===== COLLAPSE SIDEBARS & EXTRACT CONTENT =====
 function collapseSidebars() {
   const sidebarSelectors = [
     'aside', '.sidebar', '[class*="sidebar"]', '[id*="sidebar"]',
@@ -3188,44 +3345,45 @@ function collapseSidebars() {
     '.menu-sidebar', '.navigation-sidebar', '.widget-area'
   ];
 
+  const mainContent = findMainContent();
+  if (!mainContent || mainContent === document.body) return;
+
+  let peripheralContainer = document.getElementById('neuro-peripheral-container');
+  if (!peripheralContainer) {
+    peripheralContainer = document.createElement('div');
+    peripheralContainer.id = 'neuro-peripheral-container';
+    peripheralContainer.style.cssText = `
+      margin-top: 40px;
+      padding: 20px;
+      border-top: 2px dashed #6c5ce7;
+      background: rgba(108, 92, 231, 0.05);
+      border-radius: 8px;
+    `;
+    peripheralContainer.innerHTML = '<h3 style="color:#6c5ce7; margin-top:0;">📌 Extracted Peripheral Content</h3>';
+    mainContent.appendChild(peripheralContainer);
+  }
+
   sidebarSelectors.forEach(selector => {
     try {
       document.querySelectorAll(selector).forEach(el => {
-        if (!el.hasAttribute('data-sidebar-collapsed')) {
-          const toggleBtn = document.createElement('button');
-          toggleBtn.innerHTML = '☰';
-          toggleBtn.style.cssText = `
-            position: absolute;
-            top: 5px;
-            right: 5px;
-            width: 28px;
-            height: 28px;
-            background: #6c5ce7;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            z-index: 10000;
-            font-size: 14px;
-          `;
-          toggleBtn.onclick = (e) => {
-            e.stopPropagation();
-            const isCollapsed = el.style.width === '0px' || el.style.display === 'none';
-            if (isCollapsed) {
-              el.style.width = '';
-              el.style.display = '';
-              el.style.minWidth = '';
-              toggleBtn.innerHTML = '☰';
-            } else {
-              el.style.width = '0px';
-              el.style.display = 'none';
-              el.style.minWidth = '0px';
-              toggleBtn.innerHTML = '☷';
-            }
-          };
-          el.style.position = 'relative';
-          el.appendChild(toggleBtn);
-          el.setAttribute('data-sidebar-collapsed', 'true');
+        // Skip if this is actually the main content itself or it contains the main content!
+        if (el === mainContent || el.contains(mainContent) || mainContent.contains(el)) return;
+
+        if (!el.hasAttribute('data-sidebar-extracted')) {
+          el.setAttribute('data-sidebar-extracted', 'true');
+
+          // Identify useful content inside sidebar (links, paragraphs, headings)
+          const clone = el.cloneNode(true);
+          // Strip out absolute positioning or fixed layout on the clone
+          clone.style.position = 'static';
+          clone.style.width = '100%';
+          clone.style.display = 'block';
+
+          peripheralContainer.appendChild(clone);
+
+          // Completely hide the original sidebar safely
+          el.style.setProperty('display', 'none', 'important');
+          el.style.setProperty('width', '0', 'important');
         }
       });
     } catch (e) { }
@@ -3375,3 +3533,196 @@ window.addEventListener('beforeunload', () => {
   if (observer) observer.disconnect();
   if (animationObserver) animationObserver.disconnect();
 });
+
+// ========== 11. BIONIC READING (ADHD/Dyslexia Focus) ==========
+
+const bionicWordCache = new Map();
+
+function applyBionicReading() {
+  if (document.getElementById('bionic-reading-style')) return;
+  const style = document.createElement('style');
+  style.id = 'bionic-reading-style';
+  style.textContent = `
+    .bionic-bold {
+      font-weight: 700 !important;
+      opacity: 1 !important;
+    }
+    .bionic-rest {
+      opacity: 0.8 !important;
+      font-weight: 400 !important;
+    }
+  `;
+  document.head.appendChild(style);
+
+  const textNodes = [];
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+  let node;
+  const skipTags = new Set(['SCRIPT', 'STYLE', 'CODE', 'PRE', 'NOSCRIPT', 'TEXTAREA']);
+  while ((node = walk.nextNode())) {
+    if (!skipTags.has(node.parentNode.tagName) && node.nodeValue.trim().length > 0) {
+      textNodes.push(node);
+    }
+  }
+
+  textNodes.forEach(textNode => {
+    if (textNode.parentNode && textNode.parentNode.hasAttribute('data-bionic')) return;
+    const words = textNode.nodeValue.split(/(\s+)/);
+    const fragment = document.createDocumentFragment();
+    let changed = false;
+
+    words.forEach(word => {
+      // Small words or non-letters skip transformation
+      if (!/^[A-Za-z]+$/.test(word) || word.length < 2) {
+        fragment.appendChild(document.createTextNode(word));
+        return;
+      }
+
+      changed = true;
+      const lowerWord = word.toLowerCase();
+
+      // DS/Algo Polish: O(1) Hash Map Memoization for DOM creation
+      if (bionicWordCache.has(lowerWord)) {
+        const cachedNode = bionicWordCache.get(lowerWord).cloneNode(true);
+        // Retain original word casing dynamically
+        const bLen = cachedNode.childNodes[0].textContent.length;
+        cachedNode.childNodes[0].textContent = word.substring(0, bLen);
+        cachedNode.childNodes[1].textContent = word.substring(bLen);
+        fragment.appendChild(cachedNode);
+        return;
+      }
+
+      // First-time mathematical breakdown & DOM building
+      const bLetterCount = Math.ceil(word.length / 2);
+      const boldPart = word.substring(0, bLetterCount);
+      const restPart = word.substring(bLetterCount);
+
+      const span = document.createElement('span');
+      span.setAttribute('data-bionic', 'true');
+
+      const bSpan = document.createElement('span');
+      bSpan.className = 'bionic-bold';
+      bSpan.textContent = boldPart;
+
+      const rSpan = document.createElement('span');
+      rSpan.className = 'bionic-rest';
+      rSpan.textContent = restPart;
+
+      span.appendChild(bSpan);
+      span.appendChild(rSpan);
+
+      // Index reference pure lowered text struct into Memory Map
+      bionicWordCache.set(lowerWord, span.cloneNode(true));
+
+      fragment.appendChild(span);
+    });
+
+    if (changed) {
+      textNode.parentNode.replaceChild(fragment, textNode);
+    }
+  });
+}
+
+function removeBionicReading() {
+  const style = document.getElementById('bionic-reading-style');
+  if (style) style.remove();
+  document.querySelectorAll('[data-bionic="true"]').forEach(el => {
+    if (el.parentNode) {
+      el.parentNode.replaceChild(document.createTextNode(el.textContent), el);
+    }
+  });
+}
+
+// ========== 12. SENSORY AUTO-BLOCKER (Autism overload prevention) ==========
+
+function applySensoryAutoBlocker() {
+  document.querySelectorAll('video, audio').forEach(media => {
+    if (!media.hasAttribute('controls')) {
+      media.setAttribute('controls', 'true');
+    }
+    if (media.autoplay || !media.paused) {
+      media.pause();
+      media.autoplay = false;
+      const overlay = document.createElement('div');
+      overlay.className = 'sensory-blocker-overlay';
+      overlay.textContent = 'Autoplay Blocked (Click to Play)';
+      overlay.style.cssText = 'position: absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; background: rgba(0,0,0,0.6); color: white; cursor: pointer; z-index: 1000; font-family: sans-serif;';
+      if (media.parentNode && window.getComputedStyle(media.parentNode).position === 'static') {
+        media.parentNode.style.position = 'relative';
+      }
+      media.parentNode?.insertBefore(overlay, media);
+      overlay.addEventListener('click', () => {
+        media.play();
+        overlay.remove();
+      });
+    }
+  });
+}
+
+function removeSensoryAutoBlocker() {
+  document.querySelectorAll('.sensory-blocker-overlay').forEach(el => el.remove());
+}
+
+// ========== 13. CINEMA FOCUS (Structured Foreground layout) ==========
+
+function applyCinemaFocus() {
+  const mainContent = findMainContent();
+  if (!mainContent || mainContent === document.body) return; // Fallback if no specific content
+
+  // Build the overlay
+  let overlay = document.getElementById('cinema-focus-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'cinema-focus-overlay';
+    // Deep dark backdrop to blur/hide peripheral content
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(10, 10, 15, 0.85);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 2147483000;
+      pointer-events: auto; /* absorbs random clicks */
+      transition: all 0.3s ease;
+    `;
+    document.body.appendChild(overlay);
+
+    // Allow clicking the overlay to temporarily dismiss
+    overlay.addEventListener('click', () => {
+      removeCinemaFocus();
+    });
+  }
+
+  // Elevate the main content
+  mainContent.setAttribute('data-original-zindex', window.getComputedStyle(mainContent).zIndex);
+  mainContent.setAttribute('data-original-position', window.getComputedStyle(mainContent).position);
+  mainContent.setAttribute('data-original-bg', window.getComputedStyle(mainContent).backgroundColor);
+
+  mainContent.classList.add('cinema-focus-active');
+  const contentBg = (currentSettings.themeMode === 'dark') ? '#1A1A2E' : '#F5EEDC';
+
+  mainContent.style.setProperty('position', 'relative', 'important');
+  mainContent.style.setProperty('z-index', '2147483001', 'important'); // Just above the overlay
+  mainContent.style.setProperty('background-color', contentBg, 'important');
+  mainContent.style.setProperty('box-shadow', '0 0 40px rgba(0,0,0,0.5)', 'important');
+  mainContent.style.setProperty('border-radius', '12px', 'important');
+  mainContent.style.setProperty('padding', '20px', 'important');
+}
+
+function removeCinemaFocus() {
+  const overlay = document.getElementById('cinema-focus-overlay');
+  if (overlay) overlay.remove();
+
+  const mainContent = document.querySelector('.cinema-focus-active');
+  if (mainContent) {
+    mainContent.classList.remove('cinema-focus-active');
+    mainContent.style.position = mainContent.getAttribute('data-original-position') || '';
+    mainContent.style.zIndex = mainContent.getAttribute('data-original-zindex') || '';
+    mainContent.style.backgroundColor = mainContent.getAttribute('data-original-bg') || '';
+    mainContent.style.boxShadow = '';
+    mainContent.style.borderRadius = '';
+    mainContent.style.padding = '';
+  }
+}

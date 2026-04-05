@@ -38,10 +38,11 @@ const toneCache = new Map();
 const ANALYTICS_KEY = 'neuro_analytics';
 
 // ========== LRU CACHE (REUSABLE) ==========
-// Small, dependency-free LRU cache with safe string keys.
+// Small, dependency-free LRU cache with safe string keys and TTL.
 class LRUCache {
-  constructor(maxSize = 100) {
+  constructor(maxSize = 100, defaultTtlMs = 3600000) {
     this.maxSize = Math.max(1, maxSize);
+    this.defaultTtlMs = defaultTtlMs;
     this.map = new Map();
   }
 
@@ -50,36 +51,77 @@ class LRUCache {
     return safe.length > 200 ? safe.slice(0, 200) : safe;
   }
 
+  _isExpired(entry) {
+    return entry.expiresAt && entry.expiresAt < Date.now();
+  }
+
   get(key) {
     const safeKey = this.normalizeKey(key);
     if (!this.map.has(safeKey)) return undefined;
-    const value = this.map.get(safeKey);
+
+    const entry = this.map.get(safeKey);
+    if (this._isExpired(entry)) {
+      this.map.delete(safeKey);
+      return undefined;
+    }
+
     this.map.delete(safeKey);
-    this.map.set(safeKey, value);
-    return value;
+    this.map.set(safeKey, entry);
+    return entry.value;
   }
 
-  set(key, value) {
+  set(key, value, ttlMs = null) {
     const safeKey = this.normalizeKey(key);
+    const expiresAt = Date.now() + (ttlMs || this.defaultTtlMs);
+    const entry = { value, expiresAt };
+
     if (this.map.has(safeKey)) this.map.delete(safeKey);
-    this.map.set(safeKey, value);
+    this.map.set(safeKey, entry);
+
+    this._cleanExpired();
+
     if (this.map.size > this.maxSize) {
       const oldestKey = this.map.keys().next().value;
       this.map.delete(oldestKey);
     }
   }
 
+  _cleanExpired() {
+    const now = Date.now();
+    for (const [key, entry] of this.map) {
+      if (entry.expiresAt < now) {
+        this.map.delete(key);
+      }
+    }
+  }
+
   has(key) {
-    return this.map.has(this.normalizeKey(key));
+    const safeKey = this.normalizeKey(key);
+    if (!this.map.has(safeKey)) return false;
+
+    const entry = this.map.get(safeKey);
+    if (this._isExpired(entry)) {
+      this.map.delete(safeKey);
+      return false;
+    }
+    return true;
   }
 
   clear() {
     this.map.clear();
   }
+
+  getTTL(key) {
+    const safeKey = this.normalizeKey(key);
+    const entry = this.map.get(safeKey);
+    if (!entry || this._isExpired(entry)) return 0;
+    return entry.expiresAt - Date.now();
+  }
 }
 
 // Example usage: cache jargon explanations in-memory with LRU eviction.
-const jargonCache = new LRUCache(JARGON_CACHE_MAX_SIZE);
+const jargonCache = new LRUCache(JARGON_CACHE_MAX_SIZE, 86400000);
+const aiHelperCache = new LRUCache(120, 300000);
 
 // ========== KNOWLEDGE MANAGER ==========
 const KNOWLEDGE_KEYS = {
@@ -448,7 +490,7 @@ async function retrieveSimilarExplanation(type, inputText) {
 
 chrome.runtime.onInstalled.addListener((details) => {
   console.log('Extension installed/updated:', details.reason);
-  
+
   const defaultSettings = {
     dyslexicFont: false,
     softColors: false,
@@ -461,9 +503,12 @@ chrome.runtime.onInstalled.addListener((details) => {
     jargonExplainer: false,
     toneDecoder: false,
     cognitiveScoring: true,
-    analyticsEnabled: true
+    analyticsEnabled: true,
+    bionicReading: false,
+    sensoryAutoBlocker: false,
+    cinemaFocus: false
   };
-  
+
   chrome.storage.local.get(Object.keys(defaultSettings), (result) => {
     const toSet = {};
     for (const key in defaultSettings) {
@@ -471,12 +516,12 @@ chrome.runtime.onInstalled.addListener((details) => {
         toSet[key] = defaultSettings[key];
       }
     }
-    
+
     if (Object.keys(toSet).length > 0) {
       chrome.storage.local.set(toSet);
     }
   });
-  
+
   initializeAnalytics();
 });
 
@@ -518,6 +563,92 @@ const HF_API_URL = self.__ENV?.HF_API_URL || 'https://api-inference.huggingface.
 const GEMINI_API_KEY = self.__ENV?.GEMINI_API_KEY || '';
 const GEMINI_MODEL = self.__ENV?.GEMINI_MODEL || 'gemini-1.5-flash';
 const GEMINI_API_URL = self.__ENV?.GEMINI_API_URL || 'https://generativelanguage.googleapis.com/v1beta/models';
+
+// ========== GEMINI QUEUE + RETRY ==========
+class FastQueue {
+  constructor() {
+    this.items = [];
+    this.head = 0;
+    this.tail = 0;
+  }
+
+  enqueue(item) {
+    this.items[this.tail++] = item;
+  }
+
+  dequeue() {
+    if (this.head === this.tail) return null;
+    const item = this.items[this.head];
+    this.items[this.head] = null;
+    this.head++;
+
+    if (this.head === this.tail) {
+      this.items = [];
+      this.head = 0;
+      this.tail = 0;
+    }
+    return item;
+  }
+
+  size() {
+    return this.tail - this.head;
+  }
+
+  isEmpty() {
+    return this.size() === 0;
+  }
+}
+
+let geminiRateLimitedUntil = 0;
+const geminiQueue = new FastQueue();
+let geminiBusy = false;
+
+function processGeminiQueue() {
+  if (geminiBusy) return;
+  if (geminiQueue.isEmpty()) return;
+
+  const next = geminiQueue.dequeue();
+  if (!next) return;
+
+  geminiBusy = true;
+  Promise.resolve()
+    .then(next.fn)
+    .then(next.resolve)
+    .catch(next.reject)
+    .finally(() => {
+      setTimeout(() => {
+        geminiBusy = false;
+        processGeminiQueue();
+      }, 1000);
+    });
+}
+
+function runGeminiQueued(fn) {
+  return new Promise((resolve, reject) => {
+    geminiQueue.enqueue({ fn, resolve, reject });
+    processGeminiQueue();
+  });
+}
+
+function isRateLimitError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('quota') || message.includes('rate') || message.includes('429');
+}
+
+async function callGeminiWithRetry(fn) {
+  if (Date.now() < geminiRateLimitedUntil) {
+    throw new Error('Gemini API is currently rate limited (Circuit Broken)');
+  }
+  try {
+    return await fn();
+  } catch (error) {
+    if (isRateLimitError(error)) {
+      console.warn('Gemini rate limit hit. Breaking circuit for 60 seconds.');
+      geminiRateLimitedUntil = Date.now() + 60000;
+    }
+    throw error;
+  }
+}
 
 // ========== MODEL SELECTOR ==========
 // Picks a fast/local path vs. stronger cloud model based on task complexity.
@@ -584,8 +715,8 @@ async function simplifyTextWithHuggingFace(text) {
 // Replace the existing simplifyTextWithGemini function
 async function simplifyTextWithGemini(text) {
   const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-  
- const prompt = `You are a cognitive accessibility rewriter. 
+
+  const prompt = `You are a cognitive accessibility rewriter. 
 TASK: Split the following paragraph into a detailed list of simple bullet points.
 
 RULES:
@@ -600,27 +731,48 @@ ${text}`;
 
 
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [{ text: prompt }]
+  const response = await callGeminiWithRetry(() =>
+    runGeminiQueued(() => fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: prompt }]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 900,
+          topP: 0.9
         }
-      ],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 900,
-        topP: 0.9
-      }
-    })
-  });
+      })
+    }))
+  );
 
-  if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
-  const data = await response.json();
+  // 🔥 ADD THIS DEBUG BLOCK
+  const rawText = await response.text();
+
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    data = { rawText };
+  }
+
+  console.log("🔥 GEMINI DEBUG");
+  console.log("Status:", response.status);
+  console.log("Response:", data);
+
+  // 👇 VERY IMPORTANT: THROW FULL ERROR
+  if (!response.ok) {
+    throw new Error(
+      `Gemini Error ${response.status}: ${data?.error?.message || rawText
+      }`
+    );
+  }
   const candidate = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
   return candidate || text;
 }
@@ -693,19 +845,21 @@ function mockSimplify(text) {
 async function analyzeDomWithGemini(html) {
   if (!GEMINI_API_KEY) throw new Error('Missing Gemini API key');
   const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [{ text: `You are a cognitive accessibility expert. Analyze the provided HTML. Identify the CSS selectors for the most important navigation and the primary reading material. Identify clutter that causes sensory overload. Return ONLY valid JSON.\n\nIdentify the main navigation container, the primary content area, and list any distracting elements like ads or sidebars. Return JSON with keys navSelector, mainContentSelector, distractions (array).\n\nHTML:\n${html}` }]
-        }
-      ]
-    })
-  });
+  const response = await callGeminiWithRetry(() =>
+    runGeminiQueued(() => fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: `You are a cognitive accessibility expert. Analyze the provided HTML. Identify the CSS selectors for the most important navigation and the primary reading material. Identify clutter that causes sensory overload. Return ONLY valid JSON.\n\nIdentify the main navigation container, the primary content area, and list any distracting elements like ads or sidebars. Return JSON with keys navSelector, mainContentSelector, distractions (array).\n\nHTML:\n${html}` }]
+          }
+        ]
+      })
+    }))
+  );
 
   if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
   const data = await response.json();
@@ -745,11 +899,13 @@ async function defineJargonWithGemini(word, context) {
 
   let definition = '';
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(primaryPayload)
-    });
+    const response = await callGeminiWithRetry(() =>
+      runGeminiQueued(() => fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(primaryPayload)
+      }))
+    );
 
     if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
     const data = await response.json();
@@ -759,7 +915,8 @@ async function defineJargonWithGemini(word, context) {
       throw new Error('Empty definition from Gemini');
     }
   } catch (error) {
-    throw new Error(error?.message || 'Gemini jargon lookup failed');
+    console.warn('Gemini jargon lookup failed/rate-limited. Using fallback.', error);
+    definition = `Context-dependent term (Fallback definition for: ${word})`;
   }
 
   jargonCache.set(cacheKey, definition);
@@ -822,11 +979,13 @@ async function analyzeToneWithGemini(text, context) {
     ]
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  const response = await callGeminiWithRetry(() =>
+    runGeminiQueued(() => fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }))
+  );
 
   if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
   const data = await response.json();
@@ -846,6 +1005,157 @@ async function analyzeToneWithGemini(text, context) {
   }
   toneCache.set(cacheKey, result);
   return result;
+}
+
+async function inferGoalPlanWithGemini(payload = {}) {
+  if (!GEMINI_API_KEY) throw new Error('Missing Gemini API key');
+  const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const context = payload.context || {};
+  const settings = payload.settings || {};
+  const userGoal = payload.userGoal || '';
+
+  const prompt = `You are a cognitive accessibility planner.
+Infer a user goal from the page context and produce a short plan.
+
+Rules (use these to infer the goal if userGoal is empty):
+- article/docs/long paragraphs -> read
+- social feed/clutter/many distractions -> focus
+- short overview page -> skim
+- visually noisy/many banners/shopping -> calm
+
+Return ONLY JSON with keys:
+goal: one of [read, focus, skim, calm]
+actions: array of 1-3 items.
+
+Allowed actions (only these):
+- {"type":"set_feature","feature":"simplifyText|readingRuler|removeDistractions|removeAnimations|softColors|toneDecoder|jargonExplainer","enabled":true|false}
+
+Context:
+${JSON.stringify({ context, settings, userGoal })}`;
+
+  const response = await callGeminiWithRetry(() =>
+    runGeminiQueued(() => fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 350,
+          topP: 0.9
+        }
+      })
+    }))
+  );
+
+  if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
+  const data = await response.json();
+  const raw = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+  if (jsonStart === -1 || jsonEnd === -1) throw new Error('Gemini did not return JSON');
+  return JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+}
+
+async function interpretAccessibilityPromptWithGemini(prompt) {
+  if (!GEMINI_API_KEY) {
+    throw new Error('Missing Gemini API key');
+  }
+
+  const cacheKey = String(prompt || '').trim().toLowerCase();
+  if (cacheKey && aiHelperCache.has(cacheKey)) {
+    return aiHelperCache.get(cacheKey);
+  }
+
+  const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+  const instruction = `You are an accessibility assistant for a browser extension.
+
+Interpret the user's request and return ONLY valid JSON.
+
+Allowed keys:
+- dyslexicFont: boolean
+- softColors: boolean
+- removeDistractions: boolean
+- readingRuler: boolean
+- removeAnimations: boolean
+- simplifyText: boolean
+- jargonExplainer: boolean
+- toneDecoder: boolean
+- themeMode: "light" or "dark"
+
+Rules:
+- Only include keys that should change.
+- If the user asks for darker / less bright / less glare, prefer {"softColors": true, "themeMode": "dark"}.
+- If the user asks for focus or fewer things on screen, prefer {"removeDistractions": true, "removeAnimations": true}.
+- If the user asks for easier reading, prefer {"dyslexicFont": true, "simplifyText": true}.
+- Return JSON only. No markdown. No explanation.
+
+User request:
+${prompt}`;
+
+  const response = await callGeminiWithRetry(() =>
+    runGeminiQueued(() => fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: instruction }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 250,
+          topP: 0.9
+        }
+      })
+    }))
+  );
+
+  const rawText = await response.text();
+  let data;
+
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    data = { rawText };
+  }
+
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Gemini API returned ${response.status}`);
+  }
+
+  const raw = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+  const jsonStart = raw.indexOf('{');
+  const jsonEnd = raw.lastIndexOf('}');
+
+  if (jsonStart === -1 || jsonEnd === -1) {
+    throw new Error('Gemini did not return JSON');
+  }
+
+  const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+
+  const allowedKeys = new Set([
+    'dyslexicFont',
+    'softColors',
+    'removeDistractions',
+    'readingRuler',
+    'removeAnimations',
+    'simplifyText',
+    'jargonExplainer',
+    'toneDecoder',
+    'themeMode'
+  ]);
+
+  const updates = {};
+  for (const [key, value] of Object.entries(parsed || {})) {
+    if (!allowedKeys.has(key)) continue;
+    if (key === 'themeMode') {
+      if (value === 'light' || value === 'dark') updates[key] = value;
+      continue;
+    }
+    if (typeof value === 'boolean') updates[key] = value;
+  }
+
+  if (cacheKey) aiHelperCache.set(cacheKey, updates);
+  return updates;
 }
 
 async function analyzeToneWithAI(text, context) {
@@ -875,31 +1185,75 @@ async function analyzeToneWithAI(text, context) {
   }
 }
 
-async function simplifyTextWithAI(text, retryCount = 0) {
+async function simplifyTextBatchWithGemini(texts) {
+  if (Date.now() < geminiRateLimitedUntil) throw new Error('Circuit broken');
+  if (!GEMINI_API_KEY) throw new Error('No API key');
+
+  const url = `${GEMINI_API_URL}/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const prompt = `You are a cognitive accessibility rewriter.
+TASK: You will receive a compiled JSON array containing paragraphs of text.
+Simplify each paragraph into direct bullet points. Keep all facts.
+Return ONLY a valid JSON array of strings, where each string represents the transformed bullet points for that paragraph, in the exact same order.
+INPUT:
+${JSON.stringify(texts)}`;
+
+  const response = await runGeminiQueued(() => fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.1 }
+    })
+  }));
+
+  if (!response.ok) {
+    geminiRateLimitedUntil = Date.now() + 60000;
+    throw new Error(`Gemini API returned ${response.status}`);
+  }
+
+  const data = await response.json();
+  const raw = data.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+  const jsonStart = raw.indexOf('[');
+  const jsonEnd = raw.lastIndexOf(']');
+  if (jsonStart === -1 || jsonEnd === -1) throw new Error('No JSON array returned');
+  return JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+}
+
+async function simplifyTextBatchWithAI(texts) {
+  if (!GEMINI_API_KEY || Date.now() < geminiRateLimitedUntil) {
+    return texts.map(t => mockSimplify(t));
+  }
+  try {
+    const batched = await simplifyTextBatchWithGemini(texts);
+    trackPageSimplification();
+    return batched;
+  } catch (error) {
+    console.error('Batch AI API error/Rate Limited:', error);
+    return texts.map(t => mockSimplify(t));
+  }
+}
+
+async function simplifyTextWithAI(text) {
   const textHash = simpleHash(text);
-  
+
   if (aiCache.has(textHash)) {
     console.log('AI: Cache hit');
     return aiCache.get(textHash);
   }
-  
+
   if (!GEMINI_API_KEY) {
     const mockResult = mockSimplify(text);
     cacheResult(textHash, mockResult);
     return mockResult;
   }
-  
+
   try {
     const simplified = await simplifyTextWithGemini(text);
     cacheResult(textHash, simplified);
     trackPageSimplification();
     return simplified;
   } catch (error) {
-    console.error('AI API error:', error);
-    if (retryCount < 2) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      return simplifyTextWithAI(text, retryCount + 1);
-    }
+    console.error('AI API error/Rate Limited:', error);
     const fallbackResult = mockSimplify(text);
     cacheResult(textHash, fallbackResult);
     return fallbackResult;
@@ -978,7 +1332,7 @@ chrome.commands.onCommand.addListener((command) => {
     'toggle-remove-distractions': 'removeDistractions',
     'toggle-reading-ruler': 'readingRuler'
   };
-  
+
   const settingKey = commandToSetting[command];
   if (settingKey) {
     chrome.storage.local.get([settingKey], (result) => {
@@ -986,7 +1340,7 @@ chrome.commands.onCommand.addListener((command) => {
       const newValue = !currentValue;
       const update = {};
       update[settingKey] = newValue;
-      
+
       chrome.storage.local.set(update, () => {
         trackFeatureUsage(settingKey);
         safeSendToAllTabs({ action: 'settingsUpdated', settings: update });
@@ -999,16 +1353,20 @@ chrome.commands.onCommand.addListener((command) => {
 
 let ragStore = {
   cache: new Map(),
-  add: function(original, simplified, domain) {
+  add: function (original, simplified, domain) {
     const key = simpleHash(String(original || ''));
+    if (this.cache.has(key)) {
+        this.cache.delete(key);
+    }
     this.cache.set(key, { simplified, domain, votes: 0, timestamp: Date.now() });
     if (this.cache.size > 200) {
-      const oldest = [...this.cache.entries()].sort((a,b) => a[1].timestamp - b[1].timestamp)[0];
-      this.cache.delete(oldest[0]);
+      // O(1) cache eviction using Map's native insertion-order iterator
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
     }
     this.saveToStorage();
   },
-  find: function(query, domain) {
+  find: function (query, domain) {
     const key = simpleHash(String(query || ''));
     const entry = this.cache.get(key);
     if (entry && entry.domain === domain) {
@@ -1017,14 +1375,14 @@ let ragStore = {
     }
     return null;
   },
-  saveToStorage: function() {
+  saveToStorage: function () {
     const cacheObj = {};
     for (const [k, v] of this.cache) {
       cacheObj[k] = v;
     }
     chrome.storage.local.set({ rag_cache: cacheObj });
   },
-  loadFromStorage: function() {
+  loadFromStorage: function () {
     return new Promise((resolve) => {
       chrome.storage.local.get(['rag_cache'], (result) => {
         if (result.rag_cache) {
@@ -1045,17 +1403,24 @@ ragStore.loadFromStorage();
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('Message received:', request.action);
-  
+
   if (request.action === 'getSettings') {
     chrome.storage.local.get(null, (settings) => {
       sendResponse(settings);
     });
     return true;
   }
-  
+
   if (request.action === 'simplifyText') {
     simplifyTextWithAI(request.text)
       .then(simplified => sendResponse({ success: true, simplifiedText: simplified }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'simplifyTextBatch') {
+    simplifyTextBatchWithAI(request.texts)
+      .then(simplifiedTexts => sendResponse({ success: true, simplifiedTexts }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }
@@ -1066,7 +1431,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }
-  
+
   if (request.action === 'trackJargonHover') {
     trackJargonHover();
     sendResponse({ success: true });
@@ -1084,19 +1449,48 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'inferGoalPlan') {
+    inferGoalPlanWithGemini(request.payload)
+      .then(plan => sendResponse({ success: true, plan }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === 'aiHelperInterpret') {
+    (async () => {
+      try {
+        const updates = await interpretAccessibilityPromptWithGemini(request.prompt || '');
+        sendResponse({
+          success: true,
+          updates,
+          message: Object.keys(updates).length
+            ? 'Applied changes based on your request.'
+            : 'I understood the request, but no setting changes were needed.'
+        });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error.message || 'AI helper failed'
+        });
+      }
+    })();
+
+    return true;
+  }
+
   if (request.action === 'analyzeTone') {
     analyzeToneWithAI(request.text, request.context)
       .then(result => sendResponse({ success: true, tone: result.tone, explanation: result.explanation }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }
-  
+
   if (request.action === 'saveCognitiveScore') {
     saveCognitiveScore(request.score);
     sendResponse({ success: true });
     return true;
   }
-  
+
   if (request.action === 'submitCorrection') {
     ragStore.add(request.original, request.correction, request.domain);
     sendResponse({ success: true });
@@ -1116,6 +1510,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }
-  
+
   sendResponse({ success: true });
 });
